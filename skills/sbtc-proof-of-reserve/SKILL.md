@@ -1,13 +1,14 @@
 ---
 name: sbtc-proof-of-reserve
 description: "Real-time sBTC Proof-of-Reserve auditor. Derives the signer P2TR wallet from the Stacks registry, verifies on-chain BTC backing vs. circulating supply, and outputs a GREEN/YELLOW/RED HODLMM safety signal alongside a 0-100 peg health score. The standard pre-flight check for any agent operating in the Bitflow ecosystem."
-author: cliqueengagements
-author_agent: "Micro Basilisk (Agent #77) — SP219TWC8G12CSX5AB093127NC82KYQWEH8ADD1AY"
-user-invocable: true
-arguments: "doctor | install-packs | run [--threshold <0-100>]"
-entry: "sbtc-proof-of-reserve/sbtc-proof-of-reserve.ts"
-requires: []
-tags: [defi, hodlmm, sbtc, proof-of-reserve, security, infrastructure, mainnet-only, read-only]
+metadata:
+  author: cliqueengagements
+  author-agent: "Micro Basilisk (Agent #77) — SP219TWC8G12CSX5AB093127NC82KYQWEH8ADD1AY | bc1qzh2z92dlvccxq5w756qppzz8fymhgrt2dv8cf5"
+  user-invocable: "true"
+  arguments: "doctor | install-packs | run [--threshold <0-100>]"
+  entry: "sbtc-proof-of-reserve/sbtc-proof-of-reserve.ts"
+  requires: ""
+  tags: "defi, read-only, mainnet-only, l1, l2, infrastructure"
 ---
 
 # sBTC Proof of Reserve
@@ -17,6 +18,28 @@ tags: [defi, hodlmm, sbtc, proof-of-reserve, security, infrastructure, mainnet-o
 A professional-grade, read-only Proof-of-Reserve auditor that provides real-time cross-chain verification of sBTC backing. Designed to be the pre-flight check for any autonomous agent engaging in Bitflow HODLMM yield strategies — and importable as a shared security module across the entire bff-skills ecosystem.
 
 > **Mainnet only.** All endpoints target Bitcoin and Stacks mainnet production infrastructure.
+
+---
+
+## What it does
+
+Derives the sBTC signer wallet address trustlessly from the Stacks registry (no hardcoding), queries the confirmed BTC balance at that P2TR address via mempool.space, fetches total circulating sBTC supply from the `sbtc-token` contract, and computes a live reserve ratio. Outputs a `GREEN`/`YELLOW`/`RED`/`DATA_UNAVAILABLE` HODLMM safety signal and a 0-100 peg health score as structured JSON. The `runAudit()` export makes it importable as a shared security module by any other skill.
+
+---
+
+## Why agents need it
+
+HODLMM bins concentrate liquidity into tight price ranges. If sBTC de-pegs, LPs face rapid principal loss with no time to exit manually. This skill gives autonomous agents a real-time, trustless answer to "Is sBTC fully backed right now?" before any HODLMM deposit, rebalance, or yield action — acting as a circuit breaker that halts operations when the peg is structurally under-collateralized.
+
+---
+
+## Safety notes
+
+- **Read-only.** No transactions are submitted. No funds are moved.
+- **Mainnet only.** All endpoints target Bitcoin and Stacks mainnet production infrastructure.
+- Returns `DATA_UNAVAILABLE` (treated as `RED`) if any data source is unreachable — never returns a false `GREEN`.
+- Refuses to output `GREEN` or `YELLOW` if BTC reserve balance or sBTC supply cannot be fetched.
+- CoinGecko is used only for BTC/USD price display — the core reserve ratio is computed from on-chain data only.
 
 ---
 
@@ -58,7 +81,7 @@ A `GREEN` signal means every sBTC in circulation is backed by at least 0.999 BTC
 
 ---
 
-## Output Schema
+## Output contract
 
 ```json
 {

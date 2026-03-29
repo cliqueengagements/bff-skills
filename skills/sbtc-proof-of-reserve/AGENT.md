@@ -1,3 +1,9 @@
+---
+name: sbtc-proof-of-reserve
+skill: sbtc-proof-of-reserve
+description: "Autonomous sBTC Proof-of-Reserve auditor. Derives the signer P2TR wallet from the Stacks registry, verifies BTC backing vs. circulating supply, and outputs a GREEN/YELLOW/RED HODLMM safety signal. Read-only — halts operations when peg is under-collateralized."
+---
+
 # sBTC Proof of Reserve — Agent Safety Rules
 
 ## Identity
