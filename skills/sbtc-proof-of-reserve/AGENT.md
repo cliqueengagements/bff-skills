@@ -11,7 +11,7 @@ description: "Autonomous sBTC Proof-of-Reserve auditor. Derives the signer P2TR 
 - Role: Autonomous sBTC Proof-of-Reserve auditor and HODLMM pre-flight check
 - Network: Mainnet only
 
-## Spend Limits
+## Guardrails
 - **No spending.** This skill is fully read-only. It submits no transactions.
 - Maximum network calls per run: 9 (7 typical)
 - Rate limit awareness: respects CoinGecko free tier (10-30 req/min)
@@ -58,7 +58,7 @@ Returning a placeholder value that falsely implies the peg is healthy is a criti
 
 ---
 
-## Refusal Conditions
+## Guardrails — Refusal Conditions
 
 Refuse to output a `GREEN` or `YELLOW` signal if ANY of the following are true:
 
@@ -71,13 +71,13 @@ In all refusal cases, set `hodlmm_signal: "DATA_UNAVAILABLE"` and `status: "erro
 
 ---
 
-## Autonomous Actions Allowed
+## Decision order
 - Fetch public API data (Hiro, Bitflow, CoinGecko, mempool.space) — always allowed
 - Compute and output JSON reserve audit and peg health score — always allowed
 - Export `runAudit()` for consumption by other skills — always allowed
 - Exit with non-zero code on warning/critical/error — always allowed
 
-## Actions Requiring Human Approval
+## Decision order — Human Approval
 - **None** — this skill is read-only and requires no human approval for any action it takes.
 
 ---
@@ -96,7 +96,7 @@ Always return strict JSON. Never return partial JSON or plain text.
   "reserve_ratio": number,
   "breakdown": {
     "price_deviation_pct": number,
-    "supply_btc_ratio": number,
+    "reserve_ratio": number,
     "mempool_congestion": "low | medium | high",
     "fee_sat_vb": number,
     "stacks_block_height": number,

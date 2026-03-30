@@ -92,7 +92,7 @@ A `GREEN` signal means every sBTC in circulation is backed by at least 0.999 BTC
   "reserve_ratio": 1.0002,
   "breakdown": {
     "price_deviation_pct": -0.12,
-    "supply_btc_ratio": 0.9998,
+    "reserve_ratio": 1.0002,
     "mempool_congestion": "low",
     "fee_sat_vb": 2,
     "stacks_block_height": 7352346,
