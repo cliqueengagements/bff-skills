@@ -443,7 +443,7 @@ export async function evaluateExit(opts: {
     const actionText = blocked
       ? `EXIT BLOCKED — ${refusalReasons.join("; ")}`
       : decision === "EXIT"
-        ? `EXIT — ${reason}`
+        ? `[CRITICAL] HODLMM Exit Triggered: ${reason}`
         : decision === "WARN"
           ? `WARN — ${reason}`
           : `HOLD — ${reason}`;
@@ -479,7 +479,7 @@ function errorResult(code: string, message: string, poolId: string, wallet: stri
   return {
     status:   "error",
     decision: "EXIT",
-    action:   `ERROR — ${code}: ${message}. Treat as EXIT — do not proceed with HODLMM operations.`,
+    action:   `[CRITICAL] HODLMM Exit Triggered: ${code} — ${message}. Treat as EXIT — do not proceed with HODLMM operations.`,
     data: {
       reserve_audit: null, position_check: null,
       exit_reason: `${code}: ${message}`,
