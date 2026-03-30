@@ -312,7 +312,7 @@ function computeScore(breakdown: ReserveBreakdown): {
   // Without this, RED signal + score 85 → status "ok", misleading consuming agents.
   const hodlmmSignal = deriveHodlmmSignal(breakdown.reserve_ratio);
   if (hodlmmSignal === "RED") score = Math.min(score, 0);
-  else if (hodlmmSignal === "YELLOW") score = Math.min(score, 45);
+  else if (hodlmmSignal === "YELLOW") score = Math.min(score, 50);
 
   const risk_level: AuditResult["risk_level"] =
     score >= 80 ? "low" : score >= 50 ? "medium" : "high";
