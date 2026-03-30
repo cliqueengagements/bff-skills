@@ -21,6 +21,12 @@ The defensive counterpart to HODLMM yield strategies. When the sBTC peg is struc
 
 ---
 
+## Why agents need it
+
+HODLMM bins concentrate liquidity into tight price ranges. If sBTC de-pegs or bins drift out of range, LPs face rapid principal loss with no time to exit manually. Existing skills can detect these conditions (bin-guardian monitors range, proof-of-reserve monitors peg), but no skill acts on them. An autonomous agent needs a circuit breaker that converts a RED signal into an actual withdrawal — not just an alert. This skill closes that gap: detect danger AND exit before losses compound.
+
+---
+
 ## What it does
 
 Composes two data sources into a single exit decision:
