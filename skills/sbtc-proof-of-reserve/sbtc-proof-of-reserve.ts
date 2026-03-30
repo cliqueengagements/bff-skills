@@ -47,7 +47,7 @@ export type HodlmmSignal = "GREEN" | "YELLOW" | "RED" | "DATA_UNAVAILABLE";
 
 export interface ReserveBreakdown {
   price_deviation_pct:  number;
-  supply_btc_ratio:     number;   // sbtc_circulating / btc_reserve (< 1.0 = healthy)
+  reserve_ratio:        number;   // btc_reserve / sbtc_circulating (≥ 1.0 = healthy)
   mempool_congestion:   string;   // low | medium | high
   fee_sat_vb:           number;
   stacks_block_height:  number;
@@ -143,6 +143,16 @@ async function fetchJson(url: string, opts: RequestInit = {}): Promise<any> {
     ...opts,
     headers: { "User-Agent": "bff-skills/sbtc-proof-of-reserve", ...(opts.headers ?? {}) },
   });
+  // Retry once on 429 with 1s backoff (CoinGecko rate limit in multi-agent scenarios)
+  if (res.status === 429) {
+    await new Promise(r => setTimeout(r, 1000));
+    const retry = await fetch(url, {
+      ...opts,
+      headers: { "User-Agent": "bff-skills/sbtc-proof-of-reserve", ...(opts.headers ?? {}) },
+    });
+    if (!retry.ok) throw new Error(`HTTP ${retry.status} from ${url} (after retry)`);
+    return retry.json();
+  }
   if (!res.ok) throw new Error(`HTTP ${res.status} from ${url}`);
   return res.json();
 }
@@ -161,9 +171,9 @@ async function fetchSbtcSupply(): Promise<number> {
       return Number(BigInt("0x" + hex.slice(2))) / 10 ** SBTC_DECIMALS;
     }
   }
-  // Fallback: token metadata endpoint
+  // Fallback: token metadata endpoint (BigInt intermediate for precision at scale)
   const meta = await fetchJson(`${HIRO_API}/metadata/v1/ft/${SBTC_CONTRACT}`);
-  return Number(meta?.total_supply ?? 0) / 10 ** SBTC_DECIMALS;
+  return Number(BigInt(meta?.total_supply ?? "0")) / 10 ** SBTC_DECIMALS;
 }
 
 /**
@@ -278,14 +288,14 @@ function computeScore(breakdown: ReserveBreakdown): {
     issues.push(`minor peg deviation ${dev.toFixed(2)}%`);
   }
 
-  // 2. Reserve ratio (max −30 pts) — supply_btc_ratio = sbtc / btc_reserve
-  const ratio = breakdown.supply_btc_ratio;
-  if (ratio > 1.05) {
+  // 2. Reserve ratio (max −30 pts) — reserve_ratio = btc_reserve / sbtc (≥ 1.0 = healthy)
+  const rr = breakdown.reserve_ratio;
+  if (rr < 1 / 1.05) {
     score -= 30;
-    issues.push(`circulating sBTC exceeds reserve by ${((ratio - 1) * 100).toFixed(2)}%`);
-  } else if (ratio > 1.002) {
+    issues.push(`BTC reserve covers only ${(rr * 100).toFixed(2)}% of circulating sBTC`);
+  } else if (rr < 1 / 1.002) {
     score -= 15;
-    issues.push(`sBTC supply near reserve ceiling (${(ratio * 100).toFixed(2)}% of reserve)`);
+    issues.push(`reserve ratio ${rr.toFixed(4)} — near undercollateralization threshold`);
   }
 
   // 3. Mempool congestion (max −20 pts)
@@ -297,6 +307,12 @@ function computeScore(breakdown: ReserveBreakdown): {
   }
 
   score = Math.max(0, score);
+
+  // Signal-floor clamp: status must never contradict hodlmm_signal.
+  // Without this, RED signal + score 85 → status "ok", misleading consuming agents.
+  const hodlmmSignal = deriveHodlmmSignal(breakdown.reserve_ratio);
+  if (hodlmmSignal === "RED") score = Math.min(score, 0);
+  else if (hodlmmSignal === "YELLOW") score = Math.min(score, 45);
 
   const risk_level: AuditResult["risk_level"] =
     score >= 80 ? "low" : score >= 50 ? "medium" : "high";
@@ -331,29 +347,27 @@ function computeScore(breakdown: ReserveBreakdown): {
  */
 export async function runAudit(threshold = 80): Promise<AuditResult> {
   try {
-    const btcPrice = await fetchBtcPrice();
-    if (!btcPrice) throw new Error("BTC price unavailable — cannot compute peg deviation");
-
-    const [sbtcSupply, reserve, marketData, mempoolData, heights] = await Promise.all([
+    // Fetch all independent data in parallel (btcPrice was sequential before)
+    const [btcPrice, sbtcSupply, reserve, mempoolData, heights] = await Promise.all([
+      fetchBtcPrice(),
       fetchSbtcSupply(),
       fetchSignerReserve(),
-      fetchSbtcMarketData(btcPrice),
       fetchMempoolFees(),
       fetchBlockHeights(),
     ]);
+    if (!btcPrice) throw new Error("BTC price unavailable — cannot compute peg deviation");
+    // Market data depends on btcPrice, so fetched after parallel batch
+    const marketData = await fetchSbtcMarketData(btcPrice);
 
     // reserve_ratio: btc_reserve / sbtc_circulating  (≥ 1.0 = fully backed, < 1.0 = under-collateralised)
     const reserveRatio   = sbtcSupply > 0 ? reserve.btc / sbtcSupply : 0;
     const hodlmmSignal   = deriveHodlmmSignal(reserveRatio);
 
-    // supply_btc_ratio: inverse — kept for score computation and backwards compatibility
-    const supplyBtcRatio = reserve.btc > 0 ? sbtcSupply / reserve.btc : 1.0;
-
     const priceDeviationPct = (marketData.pegRatio - 1) * 100;
 
     const breakdown: ReserveBreakdown = {
       price_deviation_pct: priceDeviationPct,
-      supply_btc_ratio:    supplyBtcRatio,
+      reserve_ratio:       parseFloat(reserveRatio.toFixed(6)),
       mempool_congestion:  mempoolData.congestion,
       fee_sat_vb:          mempoolData.fastestFee,
       stacks_block_height: heights.stacks,
