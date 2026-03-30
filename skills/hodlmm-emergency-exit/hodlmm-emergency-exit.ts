@@ -33,13 +33,10 @@ const HIRO_API            = "https://api.mainnet.hiro.so";
 
 // ── Safety constants ────────────────────────────────────────────────────────
 const DEFAULT_POOL_ID        = "dlmm_1";                    // sBTC-USDCx
-const MAX_SLIPPAGE_PCT       = 1.0;                          // 1% max slippage for exit
 const EXIT_COOLDOWN_MS       = 30 * 60 * 1000;              // 30 min between exits
 const OUT_OF_RANGE_GRACE_H   = 2;                            // hours before out-of-range triggers exit
 const MAX_GAS_STX            = 50;                           // max gas spend per exit
-const MIN_STX_GAS_USTX       = 10_000;                       // 0.01 STX minimum for gas
 const FETCH_TIMEOUT_MS       = 30_000;
-const PRICE_SCALE            = 1e8;                          // Bitflow bin price scale
 const STX_ADDRESS_RE         = /^SP[0-9A-Z]{38,39}$/;
 
 // ── State file ──────────────────────────────────────────────────────────────
@@ -101,8 +98,6 @@ interface PositionCheck {
   active_bin:      number;
   user_bins:       number[];
   user_bin_count:  number;
-  slippage_pct:    number;
-  slippage_ok:     boolean;
 }
 
 interface ExitResult {
@@ -228,30 +223,16 @@ async function fetchGasFee(): Promise<number> {
   return (data.fee ?? 200) / 1e6; // Convert to STX
 }
 
-function checkSlippage(
-  activeBinId: number,
-  pool: PoolInfo,
-): { pct: number; ok: boolean } {
-  // Approximate: compare active bin position to expected
-  // For sBTC-USDCx, bin price = (raw / 1e8) * 10^(xDec - yDec)
-  // We don't have raw price here, so use pool-level price deviation as proxy
-  // This is a simplified check — the full bin-level slippage is in hodlmm-bin-guardian
-  const pct = 0; // Pool-level check; fine for emergency exit decisions
-  return { pct, ok: pct <= MAX_SLIPPAGE_PCT };
-}
-
 // ── Position analysis ───────────────────────────────────────────────────────
 async function checkPosition(wallet: string, poolId: string): Promise<PositionCheck> {
   const pool = await fetchPoolInfo(poolId);
   const userBins = await fetchUserBins(wallet, poolId);
-  const slippage = checkSlippage(pool.active_bin_id, pool);
 
   if (userBins.length === 0) {
     return {
       has_position: false, in_range: null,
       active_bin: pool.active_bin_id, user_bins: [],
-      user_bin_count: 0, slippage_pct: slippage.pct,
-      slippage_ok: slippage.ok,
+      user_bin_count: 0,
     };
   }
 
@@ -266,8 +247,6 @@ async function checkPosition(wallet: string, poolId: string): Promise<PositionCh
     active_bin:   pool.active_bin_id,
     user_bins:    binIds,
     user_bin_count: binIds.length,
-    slippage_pct: slippage.pct,
-    slippage_ok:  slippage.ok,
   };
 }
 
@@ -487,7 +466,7 @@ function errorResult(code: string, message: string, poolId: string, wallet: stri
       cooldown_ok: false, cooldown_remaining_min: 0,
       gas_ok: false, gas_estimated_stx: 0,
       pool_id: poolId, wallet,
-      confirm_required: true, out_of_range_hours: null,
+      confirm_required: false, out_of_range_hours: null,
     },
     error: message,
   };

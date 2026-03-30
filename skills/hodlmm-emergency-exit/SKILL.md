@@ -81,9 +81,7 @@ No other competitor can compose merged skills into this pipeline because no othe
       "in_range": false,
       "active_bin": 518,
       "user_bins": [500, 504, 508],
-      "user_bin_count": 3,
-      "slippage_pct": 0.5,
-      "slippage_ok": true
+      "user_bin_count": 3
     },
     "exit_reason": "string or null",
     "refusal_reasons": [],

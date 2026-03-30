@@ -93,9 +93,7 @@ Always return strict JSON. Never return partial JSON or plain text.
       "in_range": true,
       "active_bin": 518,
       "user_bins": [516, 518, 520],
-      "user_bin_count": 3,
-      "slippage_pct": 0.2,
-      "slippage_ok": true
+      "user_bin_count": 3
     },
     "exit_reason": null,
     "refusal_reasons": [],
@@ -126,9 +124,7 @@ Always return strict JSON. Never return partial JSON or plain text.
       "in_range": true,
       "active_bin": 518,
       "user_bins": [500, 504, 508],
-      "user_bin_count": 3,
-      "slippage_pct": 0.3,
-      "slippage_ok": true
+      "user_bin_count": 3
     },
     "exit_reason": "Reserve signal RED — sBTC peg unsafe",
     "refusal_reasons": [],
@@ -196,7 +192,7 @@ Always return strict JSON. Never return partial JSON or plain text.
     "gas_estimated_stx": 0,
     "pool_id": "dlmm_1",
     "wallet": "SP...",
-    "confirm_required": true,
+    "confirm_required": false,
     "out_of_range_hours": null
   },
   "error": "descriptive message"
