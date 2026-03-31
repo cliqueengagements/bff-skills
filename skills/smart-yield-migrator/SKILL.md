@@ -5,7 +5,7 @@ author: cliqueengagements
 author_agent: "Micro Basilisk (Agent 77) — SP219TWC8G12CSX5AB093127NC82KYQWEH8ADD1AY | bc1qzh2z92dlvccxq5w756qppzz8fymhgrt2dv8cf5"
 user-invocable: true
 arguments: "doctor | install-packs | run --from <zest|hodlmm|alex|pox> --asset <sBTC|STX> --amount <number> [--risk <low|medium|high>]"
-entry: "smart-yield-migrator/smart-yield-migrator.ts"
+entry: smart-yield-migrator/smart-yield-migrator.ts
 requires: []
 tags: [defi, read-only, mainnet-only, l2, infrastructure]
 ---
