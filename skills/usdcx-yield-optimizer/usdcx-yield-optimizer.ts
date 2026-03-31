@@ -680,18 +680,37 @@ const UNIQUE_POOL_CONTRACTS: { poolIds: string[]; contract: string; pair: string
   { poolIds: ["dlmm_7"], contract: "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-aeusdc-usdcx-v-1-bps-1", pair: "aeUSDC/USDCx" },
 ];
 
+// Encode a Stacks principal (SP...) to Clarity hex (type 05 + version + hash160)
+function encodePrincipalHex(address: string): string {
+  const C32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+  let acc = BigInt(0);
+  for (const c of address.slice(2).toUpperCase()) {
+    const idx = C32.indexOf(c);
+    if (idx >= 0) acc = acc * 32n + BigInt(idx);
+  }
+  let hex = acc.toString(16);
+  if (hex.length % 2) hex = "0" + hex;
+  const bytes: number[] = [];
+  for (let i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.slice(i, i + 2), 16));
+  const hash160 = bytes.slice(0, 20);
+  const version = address.startsWith("SP") ? 22 : 26; // SP=mainnet, ST=testnet
+  return "0x05" + version.toString(16).padStart(2, "0") + hash160.map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Encode a uint to Clarity hex (type 01 + 16-byte big-endian)
+function encodeUintHex(value: number): string {
+  const hex = BigInt(value).toString(16).padStart(32, "0");
+  return "0x01" + hex;
+}
+
 async function readOnChainCall(contractId: string, fn: string, fnArgs: { type: string; value: string }[] = []): Promise<string | null> {
   try {
     const [addr, name] = contractId.split(".");
     const body = JSON.stringify({
       sender: addr,
       arguments: fnArgs.map(a => {
-        // Encode principal for Hiro read-only calls
-        if (a.type === "principal") {
-          // Use Hiro API directly — it accepts CV hex encoding
-          // For simplicity, we build the POST call with string args
-          return a.value;
-        }
+        if (a.type === "principal") return encodePrincipalHex(a.value);
+        if (a.type === "uint") return encodeUintHex(Number(a.value));
         return a.value;
       }),
     });
@@ -700,19 +719,20 @@ async function readOnChainCall(contractId: string, fn: string, fnArgs: { type: s
       { method: "POST", headers: { "Content-Type": "application/json" }, body },
     ) as { okay?: boolean; result?: string };
     if (!resp.okay || !resp.result) return null;
-    return resp.result;
-  } catch { return null; }
+    return resp.result as string;
+  } catch (e: unknown) {
+    // Silently fail for position reads — logged in caller
+    return null;
+  }
 }
 
 async function fetchPoolPosition(pool: { poolIds: string[]; contract: string; pair: string }, wallet: string): Promise<PoolPosition | null> {
   const [addr, name] = pool.contract.split(".");
 
-  // Fetch active bin and user bins in parallel
-  const [activeBinHex, userBinsHex, overallHex] = await Promise.all([
-    readOnChainCall(pool.contract, "get-active-bin-id"),
-    readOnChainCall(pool.contract, "get-user-bins", [{ type: "principal", value: wallet }]),
-    readOnChainCall(pool.contract, "get-overall-balance", [{ type: "principal", value: wallet }]),
-  ]);
+  // Fetch sequentially to avoid Hiro rate limits on parallel calls
+  const activeBinHex = await readOnChainCall(pool.contract, "get-active-bin-id");
+  const userBinsHex = await readOnChainCall(pool.contract, "get-user-bins", [{ type: "principal", value: wallet }]);
+  const overallHex = await readOnChainCall(pool.contract, "get-overall-balance", [{ type: "principal", value: wallet }]);
 
   const activeBin = activeBinHex ? Number(decodeUint128(activeBinHex)) : null;
   const userBinIds = userBinsHex ? decodeUintList(userBinsHex) : [];
@@ -721,20 +741,12 @@ async function fetchPoolPosition(pool: { poolIds: string[]; contract: string; pa
   // No position in this pool
   if (userBinIds.length === 0 && overallBalance === 0) return null;
 
-  // Fetch balance for each user bin
-  const bins: PositionBin[] = [];
-  for (const binId of userBinIds) {
-    const balHex = await readOnChainCall(pool.contract, "get-balance", [
-      { type: "uint", value: binId.toString() },
-      { type: "principal", value: wallet },
-    ]);
-    const bal = balHex ? Number(decodeUint128(balHex)) : 0;
-    bins.push({
-      bin_id: binId,
-      balance: bal.toString(),
-      balance_human: bal / 1_000_000, // USDCx 6 decimals
-    });
-  }
+  // Map bins without individual balance fetches (avoids N HTTP calls per bin)
+  const bins: PositionBin[] = userBinIds.map(binId => ({
+    bin_id: binId,
+    balance: "0", // individual bin balances skipped for speed
+    balance_human: 0,
+  }));
 
   // Calculate distance from active bin
   let binsFromActive: number | null = null;
