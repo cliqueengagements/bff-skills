@@ -77,7 +77,7 @@ Especially valuable for autonomous agents managing stablecoin reserves, where ca
 
 ### doctor
 
-Verifies all data sources: Bitflow HODLMM App API, Bitflow Ticker, CoinGecko, Hiro fees, Hermetica staking, sBTC price signal.
+Verifies all data sources: Bitflow HODLMM App API, Bitflow Ticker, Bitflow Prices, Hiro fees, Hermetica staking, sBTC price signal.
 
 ```bash
 bun run usdcx-yield-optimizer/usdcx-yield-optimizer.ts doctor

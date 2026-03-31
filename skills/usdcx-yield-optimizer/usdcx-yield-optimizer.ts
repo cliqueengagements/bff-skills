@@ -361,7 +361,7 @@ interface ReserveCheck {
   deviation_pct: number;
 }
 
-// Cached ticker data to avoid double-fetching (CoinGecko/Bitflow rate limits)
+// Cached ticker data to avoid double-fetching (Bitflow rate limits)
 let _cachedTickers: TickerEntry[] | null = null;
 
 async function getCachedTickers(): Promise<TickerEntry[]> {
