@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+declare var process: { argv: string[]; exit(code?: number): never };
 /**
  * Smart Yield Migrator
  * Cross-protocol DeFi migration optimizer for Stacks.
@@ -21,7 +22,7 @@ const PROFIT_GATE_MULTIPLIER    = 3;      // 7d gain must exceed this × gas cos
 const MIN_APY_IMPROVEMENT_PCT   = 1.0;    // never recommend for <1% APY gain
 const MIN_POSITION_USD          = 50;     // warn if position below this
 const MIN_DEST_TVL_USD          = 100_000;// destination must have >$100k TVL
-const MAX_SLIPPAGE_PCT          = 0.5;    // flag pools with spread >0.5%
+// const MAX_SLIPPAGE_PCT       = 0.5;    // flag pools with spread >0.5% (reserved for future use)
 const GAS_CALLS_PER_MIGRATION   = 2;      // 1 withdraw + 1 deposit = 2 contract calls
 const GAS_BYTES_PER_CALL        = 400;    // estimated bytes per contract call
 const FALLBACK_FEE_UESTX        = 4000;   // fallback if fee API unavailable (4000 μSTX)
@@ -154,8 +155,6 @@ async function fetchHodlmmVenues(priceMap: Record<string, number>): Promise<Yiel
     const txStr = (pool.token_x ?? "").toLowerCase();
     const tyStr = (pool.token_y ?? "").toLowerCase();
     const hasSbtc = txStr.includes("sbtc") || tyStr.includes("sbtc");
-    const hasStx  = txStr.includes("token-stx") || tyStr.includes("token-stx") ||
-                    txStr.includes("stx-v") || tyStr.includes("stx-v");
 
     const asset: Asset = hasSbtc ? "sBTC" : "STX";
     const feeBps = (pool.x_provider_fee ?? 15) + (pool.y_provider_fee ?? 15);
@@ -244,7 +243,7 @@ async function fetchXykVenues(priceMap: Record<string, number>): Promise<YieldVe
   return venues;
 }
 
-async function fetchAlexVenues(priceMap: Record<string, number>): Promise<YieldVenue[]> {
+async function fetchAlexVenues(_priceMap: Record<string, number>): Promise<YieldVenue[]> {
   const tickers: any[] = await fetchJson(ALEX_TICKERS);
   const venues: YieldVenue[] = [];
 
@@ -290,7 +289,6 @@ async function fetchPoxVenue(priceMap: Record<string, number>): Promise<YieldVen
   if (!cycle) throw new Error("PoX: no cycle data");
 
   const stackedStx   = (cycle.stacked_ustx ?? 0) / 1_000_000;
-  const minThreshold = (cycle.min_threshold_ustx ?? 0) / 1_000_000;
   const tvlUsd       = stackedStx * (priceMap["stx"] ?? 0);
   const cycleLenBlk  = (pox.reward_phase_block_length ?? 2000) + (pox.prepare_phase_block_length ?? 100);
 
@@ -432,7 +430,7 @@ async function runMigration(opts: {
 
     const candidates = allVenues
       .filter(v => v.protocol !== opts.from)                  // not where we already are
-      .filter(v => v.asset === opts.asset || opts.asset === "sBTC" && v.asset === "STX")
+      .filter(v => v.asset === opts.asset || (opts.asset === "sBTC" && v.asset === "STX"))
       .filter(v => v.tvl_usd >= MIN_DEST_TVL_USD)            // liquidity check
       .filter(v => riskOrder[v.risk] <= maxRisk)              // risk filter
       .sort((a, b) => b.apy_pct - a.apy_pct);
