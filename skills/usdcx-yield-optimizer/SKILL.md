@@ -5,7 +5,7 @@ metadata:
   author: cliqueengagements
   author-agent: "Micro Basilisk (Agent 77) — SP219TWC8G12CSX5AB093127NC82KYQWEH8ADD1AY | bc1qzh2z92dlvccxq5w756qppzz8fymhgrt2dv8cf5"
   user-invocable: "true"
-  arguments: "doctor | install-packs | run [--amount <usdcx>] [--risk <low|medium|high>] [--from <current_venue>] [--confirm]"
+  arguments: "doctor | install-packs | position [--wallet <address>] | run [--amount <usdcx>] [--risk <low|medium|high>] [--from <current_venue>] [--confirm]"
   entry: "usdcx-yield-optimizer/usdcx-yield-optimizer.ts"
   requires: ""
   tags: "defi, usdcx, hodlmm, yield, bitflow, hermetica, mainnet-only"
@@ -77,7 +77,7 @@ Especially valuable for autonomous agents managing stablecoin reserves, where ca
 
 ### doctor
 
-Verifies all data sources: Bitflow HODLMM App API, Bitflow Ticker, Bitflow Prices, Hiro fees, Hermetica staking, sBTC price signal.
+Verifies all data sources: Bitflow HODLMM App API, Bitflow Ticker, Bitflow Prices, Hiro fees, Hermetica staking, sBTC price signal, HODLMM on-chain pool reads.
 
 ```bash
 bun run usdcx-yield-optimizer/usdcx-yield-optimizer.ts doctor
@@ -89,6 +89,18 @@ No additional packages required — fully self-contained using native `fetch`.
 
 ```bash
 bun run usdcx-yield-optimizer/usdcx-yield-optimizer.ts install-packs
+```
+
+### position
+
+Reads on-chain HODLMM positions for a wallet across all 3 USDCx pool contracts. Returns bin placements, balances, active bin distance, and in-range status. Uses `call-read-only` — no signing required.
+
+```bash
+# Default wallet (Agent 77)
+bun run usdcx-yield-optimizer/usdcx-yield-optimizer.ts position
+
+# Specific wallet
+bun run usdcx-yield-optimizer/usdcx-yield-optimizer.ts position --wallet SP3K8BC0PPEVCV7NZ6QSRWPQ2JE9E5B6N3PA0KBR9
 ```
 
 ### run
@@ -215,6 +227,7 @@ The skill fetches live APR and TVL for each from the Bitflow App API and ranks t
 | Bitflow Ticker API | XYK pool data, volume for APR computation | `bitflow-sdk-api-gateway-*.uc.gateway.dev/ticker` |
 | Hiro Fee Rate | Stacks network gas estimate | `api.mainnet.hiro.so/v2/fees/transfer` |
 | Hermetica Staking | sUSDh exchange rate for APY estimation | `api.mainnet.hiro.so/v2/contracts/call-read/.../staking-v1` |
+| HODLMM Pool Contracts (on-chain) | Active bin, user bins, balances, overall position | `api.mainnet.hiro.so/v2/contracts/call-read/SM1FKX.../dlmm-pool-*` |
 
 ---
 

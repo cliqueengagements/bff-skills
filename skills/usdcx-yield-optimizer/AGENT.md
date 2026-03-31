@@ -9,7 +9,8 @@ description: "Autonomous USDCx yield deployer — ranks Bitflow venues by risk-a
 ## Decision order
 
 1. Run `doctor` first. If Bitflow HODLMM App API is unavailable, abort — no venue data available.
-2. Run `run` with appropriate flags:
+2. Run `position` to check if the wallet already has HODLMM liquidity — use the output to auto-detect `--from` venue and current APR.
+3. Run `run` with appropriate flags:
    - No flags: scan all venues at medium risk tolerance
    - `--risk low`: conservative (stablecoin pairs + lending only)
    - `--from <venue> --amount <usdcx>`: compare current position against alternatives
@@ -42,6 +43,15 @@ description: "Autonomous USDCx yield deployer — ranks Bitflow venues by risk-a
 | `suggested_routes` | Higher-yield options requiring a swap |
 | `sources_failed` | Log and caveat if non-empty |
 | `action` | Human-readable recommendation |
+
+**position output:**
+
+| Field | Use |
+|-------|-----|
+| `positions[]` | Each pool with bins, balances, active bin distance |
+| `positions[].in_range` | Whether user bins overlap active bin |
+| `positions[].bins_from_active` | Distance to active trading — negative = out of range below |
+| `active_pools` | Count of pools with non-zero position |
 
 ## When NOT to act
 

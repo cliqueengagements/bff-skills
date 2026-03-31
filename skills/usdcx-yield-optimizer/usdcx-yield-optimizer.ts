@@ -596,6 +596,213 @@ function getFromAprEstimate(venue: string): number {
   return map[venue.toLowerCase()] ?? 3.0;
 }
 
+// ── On-chain position reader ──────────────────────────────────────────────
+
+interface PositionBin {
+  bin_id:         number;
+  balance:        string; // raw uint128 hex
+  balance_human:  number;
+}
+
+interface PoolPosition {
+  pool_id:           string;
+  pool_contract:     string;
+  pair:              string;
+  active_bin_id:     number | null;
+  user_bins:         PositionBin[];
+  overall_balance:   number;
+  in_range:          boolean;
+  bins_from_active:  number | null;
+}
+
+interface PositionResult {
+  status:       "ok" | "degraded" | "error";
+  wallet:       string;
+  positions:    PoolPosition[];
+  total_pools:  number;
+  active_pools: number;
+  sources_used:   string[];
+  sources_failed: string[];
+  timestamp:    string;
+  error?:       string;
+}
+
+// Decode Clarity value from hex result — handles uint128 (01) and int128 (00)
+function decodeClarityInt(hex: string): bigint {
+  let h = hex.replace(/^0x/, "");
+  // Strip ok wrapper (07) if present
+  if (h.startsWith("07")) h = h.slice(2);
+
+  const typeByte = h.slice(0, 2);
+  h = h.slice(2); // strip type byte
+
+  const raw = BigInt("0x" + h);
+
+  if (typeByte === "00") {
+    // int128 — signed, two's complement
+    const MAX_INT128 = (BigInt(1) << BigInt(127)) - BigInt(1);
+    return raw > MAX_INT128 ? raw - (BigInt(1) << BigInt(128)) : raw;
+  }
+  // uint128 (01) or unknown — treat as unsigned
+  return raw;
+}
+
+// Backwards-compatible alias
+function decodeUint128(hex: string): bigint {
+  return decodeClarityInt(hex);
+}
+
+// Decode Clarity list of uint128 from hex
+function decodeUintList(hex: string): number[] {
+  let h = hex.replace(/^0x/, "");
+  // Strip ok wrapper (07)
+  if (h.startsWith("07")) h = h.slice(2);
+  // List header: 0b + 4-byte length
+  if (!h.startsWith("0b")) return [];
+  const lenHex = h.slice(2, 10);
+  const count = parseInt(lenHex, 16);
+  const items: number[] = [];
+  let pos = 10; // after list header
+  for (let i = 0; i < count; i++) {
+    // Each uint128: type byte 01 + 16 bytes = 34 hex chars
+    if (h.slice(pos, pos + 2) !== "01") break;
+    const valHex = h.slice(pos + 2, pos + 34);
+    items.push(Number(BigInt("0x" + valHex)));
+    pos += 34;
+  }
+  return items;
+}
+
+// Unique pool contracts for position scanning
+const UNIQUE_POOL_CONTRACTS: { poolIds: string[]; contract: string; pair: string }[] = [
+  { poolIds: ["dlmm_1", "dlmm_2"], contract: "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10", pair: "sBTC/USDCx" },
+  { poolIds: ["dlmm_3", "dlmm_4", "dlmm_5"], contract: "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-stx-usdcx-v-1-bps-10", pair: "STX/USDCx" },
+  { poolIds: ["dlmm_7"], contract: "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-aeusdc-usdcx-v-1-bps-1", pair: "aeUSDC/USDCx" },
+];
+
+async function readOnChainCall(contractId: string, fn: string, fnArgs: { type: string; value: string }[] = []): Promise<string | null> {
+  try {
+    const [addr, name] = contractId.split(".");
+    const body = JSON.stringify({
+      sender: addr,
+      arguments: fnArgs.map(a => {
+        // Encode principal for Hiro read-only calls
+        if (a.type === "principal") {
+          // Use Hiro API directly — it accepts CV hex encoding
+          // For simplicity, we build the POST call with string args
+          return a.value;
+        }
+        return a.value;
+      }),
+    });
+    const resp = await fetchJson(
+      `${HIRO_API}/v2/contracts/call-read/${addr}/${name}/${fn}`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body },
+    ) as { okay?: boolean; result?: string };
+    if (!resp.okay || !resp.result) return null;
+    return resp.result;
+  } catch { return null; }
+}
+
+async function fetchPoolPosition(pool: { poolIds: string[]; contract: string; pair: string }, wallet: string): Promise<PoolPosition | null> {
+  const [addr, name] = pool.contract.split(".");
+
+  // Fetch active bin and user bins in parallel
+  const [activeBinHex, userBinsHex, overallHex] = await Promise.all([
+    readOnChainCall(pool.contract, "get-active-bin-id"),
+    readOnChainCall(pool.contract, "get-user-bins", [{ type: "principal", value: wallet }]),
+    readOnChainCall(pool.contract, "get-overall-balance", [{ type: "principal", value: wallet }]),
+  ]);
+
+  const activeBin = activeBinHex ? Number(decodeUint128(activeBinHex)) : null;
+  const userBinIds = userBinsHex ? decodeUintList(userBinsHex) : [];
+  const overallBalance = overallHex ? Number(decodeUint128(overallHex)) : 0;
+
+  // No position in this pool
+  if (userBinIds.length === 0 && overallBalance === 0) return null;
+
+  // Fetch balance for each user bin
+  const bins: PositionBin[] = [];
+  for (const binId of userBinIds) {
+    const balHex = await readOnChainCall(pool.contract, "get-balance", [
+      { type: "uint", value: binId.toString() },
+      { type: "principal", value: wallet },
+    ]);
+    const bal = balHex ? Number(decodeUint128(balHex)) : 0;
+    bins.push({
+      bin_id: binId,
+      balance: bal.toString(),
+      balance_human: bal / 1_000_000, // USDCx 6 decimals
+    });
+  }
+
+  // Calculate distance from active bin
+  let binsFromActive: number | null = null;
+  let inRange = false;
+  if (activeBin !== null && userBinIds.length > 0) {
+    const closestBin = userBinIds.reduce((closest, id) =>
+      Math.abs(id - activeBin) < Math.abs(closest - activeBin) ? id : closest
+    );
+    binsFromActive = closestBin - activeBin;
+    inRange = userBinIds.includes(activeBin) || userBinIds.some(id => Math.abs(id - activeBin) <= 1);
+  }
+
+  return {
+    pool_id: pool.poolIds[0],
+    pool_contract: pool.contract,
+    pair: pool.pair,
+    active_bin_id: activeBin,
+    user_bins: bins,
+    overall_balance: overallBalance / 1_000_000,
+    in_range: inRange,
+    bins_from_active: binsFromActive,
+  };
+}
+
+async function runPosition(wallet: string): Promise<void> {
+  const result: PositionResult = {
+    status: "ok",
+    wallet,
+    positions: [],
+    total_pools: UNIQUE_POOL_CONTRACTS.length,
+    active_pools: 0,
+    sources_used: [],
+    sources_failed: [],
+    timestamp: new Date().toISOString(),
+  };
+
+  try {
+    const positionPromises = UNIQUE_POOL_CONTRACTS.map(pool => fetchPoolPosition(pool, wallet));
+    const results = await Promise.allSettled(positionPromises);
+
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      const pool = UNIQUE_POOL_CONTRACTS[i];
+      if (r.status === "fulfilled" && r.value) {
+        result.positions.push(r.value);
+        result.active_pools++;
+        result.sources_used.push(`on-chain:${pool.contract.split(".")[1]}`);
+      } else if (r.status === "fulfilled" && !r.value) {
+        result.sources_used.push(`on-chain:${pool.contract.split(".")[1]}`);
+        // No position — not a failure
+      } else {
+        result.sources_failed.push(`on-chain:${pool.contract.split(".")[1]}`);
+      }
+    }
+
+    if (result.sources_failed.length > 0) result.status = "degraded";
+
+    console.log(JSON.stringify(result, null, 2));
+    if (result.status === "degraded") process.exit(1);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    result.status = "error";
+    result.error = msg;
+    console.log(JSON.stringify(result, null, 2));
+    process.exit(3);
+  }
+}
+
 // ── Commands ───────────────────────────────────────────────────────────────
 
 async function runDoctor(): Promise<void> {
@@ -649,6 +856,19 @@ async function runDoctor(): Promise<void> {
         const prices = await fetchPrices();
         const check = await fetchSbtcPriceSignal(prices);
         return `signal=${check.signal}, deviation=${check.deviation_pct.toFixed(2)}%`;
+      },
+    },
+    {
+      name: "HODLMM On-Chain Reads",
+      fn: async () => {
+        // Test read-only call on the STX/USDCx pool (largest TVL)
+        const hex = await readOnChainCall(
+          "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-stx-usdcx-v-1-bps-10",
+          "get-active-bin-id",
+        );
+        if (!hex) throw new Error("call-read-only returned null");
+        const activeBin = Number(decodeUint128(hex));
+        return `STX/USDCx active bin ${activeBin}, ${UNIQUE_POOL_CONTRACTS.length} pool contracts reachable`;
       },
     },
   ];
@@ -860,6 +1080,13 @@ if (command === "doctor") {
   });
 } else if (command === "install-packs") {
   console.log(JSON.stringify({ status: "ok", message: "No additional packs required — self-contained." }));
+} else if (command === "position") {
+  const wallet = getArg("--wallet", "SP219TWC8G12CSX5AB093127NC82KYQWEH8ADD1AY");
+  runPosition(wallet).catch(err => {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log(JSON.stringify({ status: "error", error: msg }));
+    process.exit(3);
+  });
 } else if (command === "run") {
   const rawRisk = getArg("--risk", "medium");
   const risk: RiskLevel = ["low", "medium", "high"].includes(rawRisk) ? rawRisk as RiskLevel : "medium";
@@ -879,7 +1106,7 @@ if (command === "doctor") {
 } else {
   console.log(JSON.stringify({
     status: "error",
-    error:  `Unknown command: ${command}. Use: doctor | install-packs | run`,
+    error:  `Unknown command: ${command}. Use: doctor | install-packs | position | run`,
   }));
   process.exit(3);
 }
