@@ -1,6 +1,6 @@
 ---
 name: usdcx-yield-optimizer
-description: "Autonomous USDCx yield deployer for Bitflow — scans 7 HODLMM pools and XYK venues, risk-tags volatile pairs via sBTC reserve health check, applies a Yield-to-Gas profit gate, and outputs executable bitflow_hodlmm_add_liquidity MCP commands to deploy USDCx to the highest-yielding pool. Suggests Hermetica sUSDh as a route when swap yields beat direct venues. The first skill that treats USDCx as a primary yield asset."
+description: "Autonomous USDCx yield deployer for Bitflow — scans 7 HODLMM pools and XYK venues, reads on-chain positions via call-read-only, risk-tags volatile pairs via sBTC reserve health check, applies a Yield-to-Gas profit gate, and outputs executable call_contract MCP command specs to deploy USDCx to the highest-yielding pool. Suggests Hermetica sUSDh as a route when swap yields beat direct venues. The first skill that treats USDCx as a primary yield asset."
 metadata:
   author: cliqueengagements
   author-agent: "Micro Basilisk (Agent 77) — SP219TWC8G12CSX5AB093127NC82KYQWEH8ADD1AY | bc1qzh2z92dlvccxq5w756qppzz8fymhgrt2dv8cf5"
@@ -23,7 +23,10 @@ Scans every live USDCx venue on Bitflow, risk-tags each one, applies a Yield-to-
 
 ## What it does
 
-Three-step pipeline: **Scan -> Risk-tag -> Gate**
+Five-step pipeline: **Position -> Scan -> Risk-tag -> Gate -> Act**
+
+**Step 0 — Position** (on-chain read):
+When `position` is called, reads the wallet's HODLMM bin placements, balances, and active bin distance directly from on-chain pool contracts via `call-read-only`. No signing required. Covers 3 unique pool contracts (sBTC/USDCx, STX/USDCx, aeUSDC/USDCx).
 
 **Step 1 — Scan** every USDCx venue in parallel:
 - 7 Bitflow HODLMM concentrated liquidity pools (sBTC/USDCx, STX/USDCx, aeUSDC/USDCx, USDh/USDCx)
@@ -42,7 +45,7 @@ The sBTC reserve signal is derived from live price deviation (sBTC/BTC) — no e
 When `--from` is specified (agent is already in a venue), applies the YTG rule: `7d extra yield > gas cost x 3`. Prevents churn — never migrate for marginal APY gains that gas costs would eat.
 
 **Step 4 — Act** (MCP command generation):
-When `--confirm` is passed with `--amount`, generates executable `bitflow_hodlmm_add_liquidity` MCP commands targeting the recommended pool's active bin. Without `--confirm`, runs in dry-run mode — analysis only, no executable output. Deployment capped at 5,000 USDCx per operation (enforced in code).
+When `--confirm` is passed with `--amount`, generates executable `call_contract` MCP command specs targeting the recommended pool's active bin. Without `--confirm`, runs in dry-run mode — analysis only, no executable output. Deployment capped at 5,000 USDCx per operation (enforced in code).
 
 ---
 
@@ -144,6 +147,36 @@ bun run usdcx-yield-optimizer/usdcx-yield-optimizer.ts run --from zest --amount 
 
 All outputs are strict JSON to stdout.
 
+### position output
+
+```json
+{
+  "status": "ok",
+  "wallet": "SP219TWC8G12CSX5AB093127NC82KYQWEH8ADD1AY",
+  "positions": [
+    {
+      "pool_id": "dlmm_3",
+      "pool_contract": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-stx-usdcx-v-1-bps-10",
+      "pair": "STX/USDCx",
+      "active_bin_id": -221,
+      "user_bins": [
+        { "bin_id": -220, "balance": "500000000", "balance_human": 500.0 }
+      ],
+      "overall_balance": 500.0,
+      "in_range": true,
+      "bins_from_active": 1
+    }
+  ],
+  "total_pools": 3,
+  "active_pools": 1,
+  "sources_used": ["on-chain:dlmm-pool-stx-usdcx-v-1-bps-10"],
+  "sources_failed": [],
+  "timestamp": "2026-03-31T14:18:31.219Z"
+}
+```
+
+### run output
+
 ```json
 {
   "status": "ok",
@@ -190,13 +223,13 @@ All outputs are strict JSON to stdout.
   "mcp_commands": [
     {
       "step": 1,
-      "tool": "bitflow_hodlmm_add_liquidity",
-      "description": "Deploy 1000 USDCx to HODLMM dlmm_7 (aeUSDC/USDCx) around active bin 8388608",
+      "tool": "call_contract",
+      "description": "Deploy 1000 USDCx to HODLMM dlmm_7 (aeUSDC/USDCx) at bin offset +1 from active bin",
       "params": {
-        "poolId": "dlmm_7",
-        "amountUsdcx": 1000,
-        "targetBinId": 8388608,
-        "binRange": 5
+        "contractAddress": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD",
+        "contractName": "dlmm-liquidity-router-v-1-2",
+        "functionName": "add-liquidity-multi",
+        "note": "SPEC ONLY — requires trait_reference support in call_contract MCP tool"
       }
     }
   ],

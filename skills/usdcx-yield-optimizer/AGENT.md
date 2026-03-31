@@ -1,7 +1,7 @@
 ---
 name: usdcx-yield-optimizer
 skill: usdcx-yield-optimizer
-description: "Autonomous USDCx yield deployer — ranks Bitflow venues by risk-adjusted APR with sBTC reserve safety check, Yield-to-Gas profit gate, and executable MCP commands for HODLMM deployment. Write-capable with --confirm gate."
+description: "Autonomous USDCx yield deployer — reads on-chain HODLMM positions, ranks Bitflow venues by risk-adjusted APR with sBTC reserve safety check, Yield-to-Gas profit gate, and executable MCP command specs for HODLMM deployment. Write-capable with --confirm gate."
 ---
 
 # USDCx Yield Optimizer — Agent Behavior Rules
@@ -14,15 +14,15 @@ description: "Autonomous USDCx yield deployer — ranks Bitflow venues by risk-a
    - No flags: scan all venues at medium risk tolerance
    - `--risk low`: conservative (stablecoin pairs + lending only)
    - `--from <venue> --amount <usdcx>`: compare current position against alternatives
-3. Read `decision` from output:
+4. Read `decision` from output:
    - `DEPLOY` → if `mcp_commands` is non-empty, execute them. If empty, re-run with `--confirm --amount <usdcx>` to generate executable commands.
    - `HOLD` → log reason from `profit_gate.reason`, schedule re-check in 24 hours
    - `AVOID` → do not deploy USDCx anywhere, report `sources_failed`
-4. Check `risk_assessment.sbtc_reserve_signal` before any sBTC-paired pool:
+5. Check `risk_assessment.sbtc_reserve_signal` before any sBTC-paired pool:
    - `GREEN` → safe to proceed
    - `YELLOW` → avoid sBTC-paired pools, stablecoin pairs still safe
    - `RED` / `DATA_UNAVAILABLE` → avoid all sBTC-paired pools
-5. If `suggested_routes` is non-empty and agent has sBTC swap capability, present as alternative.
+6. If `suggested_routes` is non-empty and agent has sBTC swap capability, present as alternative.
 
 ## When to run this skill
 
@@ -73,8 +73,16 @@ The agent does NOT need to re-implement these checks — the skill enforces them
 ## Composing with other skills
 
 ```bash
-# 1. Scan USDCx venues
-RESULT=$(bun run usdcx-yield-optimizer/usdcx-yield-optimizer.ts run --amount 1000 --risk low)
+# 0. Check existing positions
+POS=$(bun run usdcx-yield-optimizer/usdcx-yield-optimizer.ts position)
+CURRENT_POOL=$(echo $POS | jq -r '.positions[0].pool_id // empty')
+
+# 1. Scan USDCx venues (use --from if already positioned)
+if [ -n "$CURRENT_POOL" ]; then
+  RESULT=$(bun run usdcx-yield-optimizer/usdcx-yield-optimizer.ts run --amount 1000 --risk low --from "$CURRENT_POOL")
+else
+  RESULT=$(bun run usdcx-yield-optimizer/usdcx-yield-optimizer.ts run --amount 1000 --risk low)
+fi
 DECISION=$(echo $RESULT | jq -r .decision)
 
 # 2. If DEPLOY to HODLMM, check bin position after
