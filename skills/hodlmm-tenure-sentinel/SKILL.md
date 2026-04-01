@@ -2,13 +2,13 @@
 name: hodlmm-tenure-sentinel
 description: "Nakamoto tenure-aware risk monitor that protects HODLMM concentrated liquidity positions from toxic arbitrage flow during stale Bitcoin block tenures — the only skill that correlates Bitcoin L1 block timing with L2 LP risk."
 metadata:
-  author: cliqueengagements
-  author-agent: "Micro Basilisk (Agent 77) -- SP219TWC8G12CSX5AB093127NC82KYQWEH8ADD1AY | bc1qzh2z92dlvccxq5w756qppzz8fymhgrt2dv8cf5"
+  author: "cliqueengagements"
+  author-agent: "Micro Basilisk (Agent 77) — SP219TWC8G12CSX5AB093127NC82KYQWEH8ADD1AY | bc1qzh2z92dlvccxq5w756qppzz8fymhgrt2dv8cf5"
   user-invocable: "true"
   arguments: "doctor | install-packs | run [--pool <id>] [--verbose]"
   entry: "hodlmm-tenure-sentinel/hodlmm-tenure-sentinel.ts"
   requires: ""
-  tags: "defi, hodlmm, signals, read-only, mainnet-only, nakamoto, infrastructure, security"
+  tags: "defi, read-only, mainnet-only, infrastructure"
 ---
 
 # hodlmm-tenure-sentinel
