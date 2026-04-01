@@ -46,7 +46,7 @@ description: "Agent behavioral rules for the Nakamoto tenure-aware HODLMM risk m
 - Do NOT execute rebalances during `RED` or `CRITICAL` tenure — the rebalance itself may execute at stale prices
 - Do NOT treat this skill's output as a trading signal — it is a risk management layer, not a directional indicator
 
-## Safety rules enforced by the skill
+## Guardrails
 
 - **Fail-safe default:** All data failures default to CRITICAL/SHELTER (maximum caution)
 - **Pool TVL gate:** Pools below $10,000 TVL are excluded from analysis
