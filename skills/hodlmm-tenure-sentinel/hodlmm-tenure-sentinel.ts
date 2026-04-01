@@ -37,6 +37,78 @@ const FETCH_TIMEOUT_MS = 30_000;
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
+interface NodeInfo {
+  tenure_height?: number;
+  stacks_tip_height?: number;
+  burn_block_height?: number;
+  is_fully_synced?: boolean;
+}
+
+interface StacksBlock {
+  height: number;
+  tenure_height: number;
+  block_time: number;
+  block_time_iso: string;
+  burn_block_height: number;
+  burn_block_time: number;
+  burn_block_time_iso: string;
+  tx_count: number;
+}
+
+interface BlocksResponse {
+  results: StacksBlock[];
+}
+
+interface BurnBlock {
+  burn_block_height: number;
+  burn_block_time: number;
+  burn_block_time_iso: string;
+  burn_block_time_unix?: number;
+  stacks_blocks: string[];
+}
+
+interface BurnBlocksResponse {
+  results: BurnBlock[];
+}
+
+interface PoolToken {
+  symbol: string;
+  contract: string;
+  decimals: number;
+  priceUsd: number;
+}
+
+interface PoolCompositionToken {
+  liquidity: number;
+  liquidityUsd: number;
+  percentage: number;
+  symbol?: string;
+}
+
+interface HodlmmPool {
+  poolId: string;
+  pool_id?: string;
+  tvlUsd: number | string;
+  apr: number | string;
+  apr24h?: number | string;
+  binStep: number | string;
+  baseFee: number | string;
+  dynamicFee: number | string;
+  volumeUsd1d: number | string;
+  volumeUsd7d?: number | string;
+  tokens?: { tokenX: PoolToken; tokenY: PoolToken };
+  poolComposition?: { tokenX: PoolCompositionToken; tokenY: PoolCompositionToken };
+  poolStatus?: string;
+  type?: string;
+  poolType?: string;
+}
+
+interface PoolsApiResponse {
+  data?: HodlmmPool[];
+  results?: HodlmmPool[];
+  pools?: HodlmmPool[];
+}
+
 interface TenureStatus {
   burn_block_height: number;
   burn_block_time_iso: string;
@@ -126,29 +198,40 @@ async function fetchJson<T>(url: string): Promise<T> {
 
 // ── Data fetchers ──────────────────────────────────────────────────────────────
 
-async function fetchNodeInfo(): Promise<any> {
-  return fetchJson(`${HIRO_BASE}/v2/info`);
+async function fetchNodeInfo(): Promise<NodeInfo> {
+  return fetchJson<NodeInfo>(`${HIRO_BASE}/v2/info`);
 }
 
-async function fetchLatestBlocks(limit = 5): Promise<any> {
-  return fetchJson(`${HIRO_BASE}/extended/v2/blocks?limit=${limit}`);
+async function fetchLatestBlocks(limit = 5): Promise<BlocksResponse> {
+  return fetchJson<BlocksResponse>(`${HIRO_BASE}/extended/v2/blocks?limit=${limit}`);
 }
 
-async function fetchBurnBlocks(limit = BURN_BLOCKS_HISTORY): Promise<any> {
-  return fetchJson(`${HIRO_BASE}/extended/v2/burn-blocks?limit=${limit}`);
+async function fetchBurnBlocks(limit = BURN_BLOCKS_HISTORY): Promise<BurnBlocksResponse> {
+  return fetchJson<BurnBlocksResponse>(`${HIRO_BASE}/extended/v2/burn-blocks?limit=${limit}`);
 }
 
-async function fetchPools(): Promise<any[]> {
-  const data = await fetchJson<any>(BITFLOW_POOLS);
+async function fetchPools(): Promise<HodlmmPool[]> {
+  const data = await fetchJson<HodlmmPool[] | PoolsApiResponse>(BITFLOW_POOLS);
   if (Array.isArray(data)) return data;
-  if (data?.data) return data.data;
-  if (data?.results) return data.results;
-  if (data?.pools) return data.pools;
+  if ((data as PoolsApiResponse).data) return (data as PoolsApiResponse).data!;
+  if ((data as PoolsApiResponse).results) return (data as PoolsApiResponse).results!;
+  if ((data as PoolsApiResponse).pools) return (data as PoolsApiResponse).pools!;
   return [];
 }
 
-async function fetchStxFees(): Promise<any> {
-  return fetchJson(`${HIRO_BASE}/v2/fees/transfer`);
+async function fetchStxFees(): Promise<number> {
+  return fetchJson<number>(`${HIRO_BASE}/v2/fees/transfer`);
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+function toNum(val: number | string | undefined, fallback: number): number {
+  if (typeof val === "number") return val;
+  if (typeof val === "string") {
+    const n = parseFloat(val);
+    return isNaN(n) ? fallback : n;
+  }
+  return fallback;
 }
 
 // ── Core logic ─────────────────────────────────────────────────────────────────
@@ -174,13 +257,12 @@ function riskDescription(level: TenureStatus["risk_level"], ageS: number): strin
   }
 }
 
-function computeTenureStatus(nodeInfo: any, latestBlock: any, burnBlockData: any): TenureStatus {
+function computeTenureStatus(nodeInfo: NodeInfo, latestBlock: StacksBlock, burnBlockData: BurnBlocksResponse | null): TenureStatus {
   const burnTime = latestBlock.burn_block_time;
   const burnTimeIso = latestBlock.burn_block_time_iso;
   const nowUnix = Math.floor(Date.now() / 1000);
   const tenureAgeS = nowUnix - burnTime;
 
-  // Count stacks blocks in current tenure from burn-blocks data
   let stacksBlocksInTenure = 0;
   if (burnBlockData?.results?.[0]?.stacks_blocks) {
     stacksBlocksInTenure = burnBlockData.results[0].stacks_blocks.length;
@@ -201,20 +283,20 @@ function computeTenureStatus(nodeInfo: any, latestBlock: any, burnBlockData: any
   };
 }
 
-function computeTimingStats(burnBlocks: any[]): TimingStats {
+function computeTimingStats(burnBlocks: BurnBlock[]): TimingStats {
   const blocks: BlockTiming[] = [];
   const gaps: number[] = [];
 
   for (let i = 0; i < burnBlocks.length; i++) {
     const bb = burnBlocks[i];
-    const burnTime = bb.burn_block_time ?? bb.burn_block_time_unix;
+    const burnTime = bb.burn_block_time ?? bb.burn_block_time_unix ?? 0;
     const burnTimeIso = bb.burn_block_time_iso ?? new Date(burnTime * 1000).toISOString();
     const stacksBlocks = bb.stacks_blocks?.length ?? 0;
     let gapS: number | null = null;
 
     if (i < burnBlocks.length - 1) {
       const prevBb = burnBlocks[i + 1];
-      const prevTime = prevBb.burn_block_time ?? prevBb.burn_block_time_unix;
+      const prevTime = prevBb.burn_block_time ?? prevBb.burn_block_time_unix ?? 0;
       gapS = burnTime - prevTime;
       if (gapS > 0) gaps.push(gapS);
     }
@@ -245,12 +327,12 @@ function computeTimingStats(burnBlocks: any[]): TimingStats {
   };
 }
 
-function assessPoolRisk(pool: any, tenure: TenureStatus): PoolRisk | null {
-  const tvl = typeof pool.tvlUsd === "number" ? pool.tvlUsd : parseFloat(pool.tvlUsd ?? "0");
-  const apr = typeof pool.apr === "number" ? pool.apr : parseFloat(pool.apr ?? "0");
-  const binStep = typeof pool.binStep === "number" ? pool.binStep : parseFloat(pool.binStep ?? "10");
-  const baseFee = typeof pool.baseFee === "number" ? pool.baseFee : parseFloat(pool.baseFee ?? "0.003");
-  const vol24h = typeof pool.volumeUsd1d === "number" ? pool.volumeUsd1d : parseFloat(pool.volumeUsd1d ?? "0");
+function assessPoolRisk(pool: HodlmmPool, tenure: TenureStatus): PoolRisk | null {
+  const tvl = toNum(pool.tvlUsd, 0);
+  const apr = toNum(pool.apr, 0);
+  const binStep = toNum(pool.binStep, 10);
+  const baseFee = toNum(pool.baseFee, 0.003);
+  const vol24h = toNum(pool.volumeUsd1d, 0);
   const poolId = pool.poolId ?? pool.pool_id ?? "unknown";
 
   // Skip tiny or implausible pools
@@ -386,6 +468,46 @@ function overallDecision(tenure: TenureStatus, pools: PoolRisk[]): { decision: S
   };
 }
 
+// ── Error helper ───────────────────────────────────────────────────────────────
+
+function failSafeShelter(sourcesUsed: string[], sourcesFailed: string[], errorMsg: string): SentinelResult {
+  return {
+    status: "error",
+    decision: "SHELTER",
+    action: "Data sources unavailable — assume maximum risk. Do not deploy new liquidity.",
+    tenure: {
+      burn_block_height: 0, burn_block_time_iso: "", burn_block_time_unix: 0,
+      tenure_age_s: 9999, tenure_height: 0, stacks_tip_height: 0,
+      stacks_blocks_in_tenure: 0, risk_level: "CRITICAL",
+      risk_description: "Unable to determine tenure status — defaulting to maximum risk.",
+    },
+    timing: { blocks: [], avg_gap_s: 0, min_gap_s: 0, max_gap_s: 0, stddev_s: 0, predicted_next_block_s: 0 },
+    pools: [],
+    sources_used: sourcesUsed,
+    sources_failed: sourcesFailed,
+    timestamp: new Date().toISOString(),
+    error: errorMsg,
+  };
+}
+
+// ── Filter pools ───────────────────────────────────────────────────────────────
+
+function filterDlmmPools(pools: HodlmmPool[], poolFilter?: string): HodlmmPool[] {
+  let filtered = pools.filter(p => {
+    const id = p.poolId ?? p.pool_id ?? "";
+    const tvl = toNum(p.tvlUsd, 0);
+    return id.startsWith("dlmm_") && tvl >= MIN_TVL_USD;
+  });
+
+  if (poolFilter) {
+    filtered = filtered.filter(p =>
+      (p.poolId ?? p.pool_id ?? "").toLowerCase() === poolFilter.toLowerCase()
+    );
+  }
+
+  return filtered;
+}
+
 // ── Commands ───────────────────────────────────────────────────────────────────
 
 async function runDoctor(): Promise<void> {
@@ -427,98 +549,54 @@ async function runDoctor(): Promise<void> {
 async function runSentinel(opts: { pool?: string; verbose?: boolean }): Promise<void> {
   const sourcesUsed: string[] = [];
   const sourcesFailed: string[] = [];
-  const now = new Date().toISOString();
 
   // Fetch all data sources in parallel
-  let nodeInfo: any, blocksData: any, burnData: any, pools: any[], feesData: any;
+  let nodeInfo: NodeInfo | null;
+  let blocksData: BlocksResponse | null;
+  let burnData: BurnBlocksResponse | null;
+  let pools: HodlmmPool[];
+  let _feesData: number | null;
 
   try {
-    [nodeInfo, blocksData, burnData, pools, feesData] = await Promise.all([
+    [nodeInfo, blocksData, burnData, pools, _feesData] = await Promise.all([
       fetchNodeInfo().then(d => { sourcesUsed.push("hiro-node-info"); return d; })
-        .catch(e => { sourcesFailed.push("hiro-node-info"); return null; }),
+        .catch(() => { sourcesFailed.push("hiro-node-info"); return null; }),
       fetchLatestBlocks(1).then(d => { sourcesUsed.push("hiro-blocks"); return d; })
-        .catch(e => { sourcesFailed.push("hiro-blocks"); return null; }),
+        .catch(() => { sourcesFailed.push("hiro-blocks"); return null; }),
       fetchBurnBlocks().then(d => { sourcesUsed.push("hiro-burn-blocks"); return d; })
-        .catch(e => { sourcesFailed.push("hiro-burn-blocks"); return null; }),
+        .catch(() => { sourcesFailed.push("hiro-burn-blocks"); return null; }),
       fetchPools().then(d => { sourcesUsed.push("bitflow-hodlmm"); return d; })
-        .catch(e => { sourcesFailed.push("bitflow-hodlmm"); return []; }),
+        .catch(() => { sourcesFailed.push("bitflow-hodlmm"); return [] as HodlmmPool[]; }),
       fetchStxFees().then(d => { sourcesUsed.push("hiro-fees"); return d; })
-        .catch(e => { sourcesFailed.push("hiro-fees"); return null; }),
+        .catch(() => { sourcesFailed.push("hiro-fees"); return null; }),
     ]);
-  } catch (err: any) {
-    const errorResult: SentinelResult = {
-      status: "error",
-      decision: "SHELTER",
-      action: "Data sources unavailable — assume maximum risk. Do not deploy new liquidity.",
-      tenure: {
-        burn_block_height: 0,
-        burn_block_time_iso: "",
-        burn_block_time_unix: 0,
-        tenure_age_s: 9999,
-        tenure_height: 0,
-        stacks_tip_height: 0,
-        stacks_blocks_in_tenure: 0,
-        risk_level: "CRITICAL",
-        risk_description: "Unable to determine tenure status — defaulting to maximum risk.",
-      },
-      timing: { blocks: [], avg_gap_s: 0, min_gap_s: 0, max_gap_s: 0, stddev_s: 0, predicted_next_block_s: 0 },
-      pools: [],
-      sources_used: sourcesUsed,
-      sources_failed: sourcesFailed,
-      timestamp: now,
-      error: err.message,
-    };
-    console.log(JSON.stringify(errorResult, null, 2));
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    const result = failSafeShelter(sourcesUsed, sourcesFailed, msg);
+    console.log(JSON.stringify(result, null, 2));
     process.exit(3);
     return;
   }
 
   // Must have blocks data for tenure calculation
   if (!blocksData?.results?.[0] && !nodeInfo) {
-    const errorResult: SentinelResult = {
-      status: "error",
-      decision: "SHELTER",
-      action: "Cannot determine tenure age — defaulting to SHELTER. Do not deploy.",
-      tenure: {
-        burn_block_height: 0, burn_block_time_iso: "", burn_block_time_unix: 0,
-        tenure_age_s: 9999, tenure_height: 0, stacks_tip_height: 0,
-        stacks_blocks_in_tenure: 0, risk_level: "CRITICAL",
-        risk_description: "Block data unavailable — maximum risk assumed.",
-      },
-      timing: { blocks: [], avg_gap_s: 0, min_gap_s: 0, max_gap_s: 0, stddev_s: 0, predicted_next_block_s: 0 },
-      pools: [],
-      sources_used: sourcesUsed,
-      sources_failed: sourcesFailed,
-      timestamp: now,
-      error: "No block data available",
-    };
-    console.log(JSON.stringify(errorResult, null, 2));
+    const result = failSafeShelter(sourcesUsed, sourcesFailed, "No block data available");
+    console.log(JSON.stringify(result, null, 2));
     process.exit(3);
     return;
   }
 
-  const latestBlock = blocksData?.results?.[0];
+  const latestBlock = blocksData!.results[0];
 
   // Compute tenure status
-  const tenure = computeTenureStatus(nodeInfo ?? {}, latestBlock, burnData);
+  const tenure = computeTenureStatus(nodeInfo ?? {} as NodeInfo, latestBlock, burnData);
 
   // Compute timing stats from burn block history
   const burnBlocks = burnData?.results ?? [];
   const timing = computeTimingStats(burnBlocks);
 
   // Assess each HODLMM pool
-  let dlmmPools = pools.filter((p: any) => {
-    const id = p.poolId ?? p.pool_id ?? "";
-    const tvl = typeof p.tvlUsd === "number" ? p.tvlUsd : parseFloat(p.tvlUsd ?? "0");
-    return id.startsWith("dlmm_") && tvl >= MIN_TVL_USD;
-  });
-
-  // Filter to specific pool if requested
-  if (opts.pool) {
-    dlmmPools = dlmmPools.filter((p: any) =>
-      (p.poolId ?? p.pool_id ?? "").toLowerCase() === opts.pool!.toLowerCase()
-    );
-  }
+  const dlmmPools = filterDlmmPools(pools, opts.pool);
 
   const poolRisks: PoolRisk[] = [];
   for (const pool of dlmmPools) {
@@ -527,7 +605,7 @@ async function runSentinel(opts: { pool?: string; verbose?: boolean }): Promise<
   }
 
   // Sort: highest risk first
-  const riskOrder = { CRITICAL: 0, HIGH: 1, MODERATE: 2, LOW: 3 };
+  const riskOrder: Record<PoolRisk["toxic_flow_exposure"], number> = { CRITICAL: 0, HIGH: 1, MODERATE: 2, LOW: 3 };
   poolRisks.sort((a, b) => riskOrder[a.toxic_flow_exposure] - riskOrder[b.toxic_flow_exposure]);
 
   // Overall decision
@@ -540,12 +618,12 @@ async function runSentinel(opts: { pool?: string; verbose?: boolean }): Promise<
     tenure,
     timing: opts.verbose ? timing : {
       ...timing,
-      blocks: timing.blocks.slice(0, 5), // limit to 5 most recent in non-verbose
+      blocks: timing.blocks.slice(0, 5),
     },
     pools: poolRisks,
     sources_used: sourcesUsed,
     sources_failed: sourcesFailed,
-    timestamp: now,
+    timestamp: new Date().toISOString(),
     error: null,
   };
 
@@ -571,33 +649,17 @@ export async function assessTenureRisk(pool?: string): Promise<SentinelResult> {
     fetchBurnBlocks().then(d => { sourcesUsed.push("hiro-burn-blocks"); return d; })
       .catch(() => { sourcesFailed.push("hiro-burn-blocks"); return null; }),
     fetchPools().then(d => { sourcesUsed.push("bitflow-hodlmm"); return d; })
-      .catch(() => { sourcesFailed.push("bitflow-hodlmm"); return []; }),
+      .catch(() => { sourcesFailed.push("bitflow-hodlmm"); return [] as HodlmmPool[]; }),
   ]);
 
   if (!blocksData?.results?.[0]) {
-    return {
-      status: "error", decision: "SHELTER",
-      action: "Cannot read block data — assume max risk.",
-      tenure: {
-        burn_block_height: 0, burn_block_time_iso: "", burn_block_time_unix: 0,
-        tenure_age_s: 9999, tenure_height: 0, stacks_tip_height: 0,
-        stacks_blocks_in_tenure: 0, risk_level: "CRITICAL",
-        risk_description: "Data unavailable.",
-      },
-      timing: { blocks: [], avg_gap_s: 0, min_gap_s: 0, max_gap_s: 0, stddev_s: 0, predicted_next_block_s: 0 },
-      pools: [], sources_used: sourcesUsed, sources_failed: sourcesFailed,
-      timestamp: new Date().toISOString(), error: "No block data",
-    };
+    return failSafeShelter(sourcesUsed, sourcesFailed, "No block data");
   }
 
-  const tenure = computeTenureStatus(nodeInfo ?? {}, blocksData.results[0], burnData);
+  const tenure = computeTenureStatus(nodeInfo ?? {} as NodeInfo, blocksData.results[0], burnData);
   const timing = computeTimingStats(burnData?.results ?? []);
 
-  let dlmmPools = (pools as any[]).filter((p: any) =>
-    (p.type === "DLMM" || p.poolType === "DLMM") && parseFloat(p.tvlUsd ?? "0") >= MIN_TVL_USD
-  );
-  if (pool) dlmmPools = dlmmPools.filter((p: any) => (p.poolId ?? "").toLowerCase() === pool.toLowerCase());
-
+  const dlmmPools = filterDlmmPools(pools, pool);
   const poolRisks = dlmmPools.map(p => assessPoolRisk(p, tenure)).filter(Boolean) as PoolRisk[];
   const { decision, action } = overallDecision(tenure, poolRisks);
 
@@ -638,13 +700,9 @@ program
   .action(runSentinel);
 
 if (import.meta.main) {
-  program.parseAsync(process.argv).catch((err: any) => {
-    console.error(JSON.stringify({
-      status: "error",
-      decision: "SHELTER",
-      action: "Unhandled error — assume maximum risk.",
-      error: err.message,
-    }));
+  program.parseAsync(process.argv).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    console.error(JSON.stringify({ error: msg }));
     process.exit(3);
   });
 }
