@@ -1,10 +1,10 @@
 ---
-name: hodlmm-tenure-sentinel
-skill: hodlmm-tenure-sentinel
+name: hodlmm-tenure-protector
+skill: hodlmm-tenure-protector
 description: "Agent behavioral rules for the Nakamoto tenure-aware HODLMM risk monitor — protects concentrated liquidity from stale-tenure toxic flow."
 ---
 
-# hodlmm-tenure-sentinel — Agent Behavior Rules
+# hodlmm-tenure-protector — Agent Behavior Rules
 
 ## Decision order
 
@@ -69,7 +69,7 @@ description: "Agent behavioral rules for the Nakamoto tenure-aware HODLMM risk m
 
 ```bash
 # Gate a rebalance behind tenure check
-RESULT=$(bun run skills/hodlmm-tenure-sentinel/hodlmm-tenure-sentinel.ts run --pool dlmm_1)
+RESULT=$(bun run skills/hodlmm-tenure-protector/hodlmm-tenure-protector.ts run --pool dlmm_1)
 DECISION=$(echo "$RESULT" | jq -r '.decision')
 
 if [ "$DECISION" = "SAFE" ]; then
@@ -81,7 +81,7 @@ fi
 
 ```bash
 # Compose with emergency exit
-RISK=$(bun run skills/hodlmm-tenure-sentinel/hodlmm-tenure-sentinel.ts run)
+RISK=$(bun run skills/hodlmm-tenure-protector/hodlmm-tenure-protector.ts run)
 if echo "$RISK" | jq -e '.decision == "SHELTER"' > /dev/null; then
   bun run skills/hodlmm-emergency-exit/hodlmm-emergency-exit.ts run --wallet "$WALLET" --confirm
 fi

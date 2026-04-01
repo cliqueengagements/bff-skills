@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * hodlmm-tenure-sentinel — Nakamoto tenure-aware risk monitor for HODLMM LPs.
+ * hodlmm-tenure-protector — Nakamoto tenure-aware risk monitor for HODLMM LPs.
  *
  * Monitors Bitcoin L1 block timing to detect "stale tenure" windows where
  * HODLMM LPs are exposed to toxic arbitrage flow. During tenure changes,
@@ -15,7 +15,7 @@ import { Command } from "commander";
 
 const HIRO_BASE = "https://api.mainnet.hiro.so";
 const BITFLOW_POOLS = "https://bff.bitflowapis.finance/api/app/v1/pools";
-const USER_AGENT = "bff-skills/hodlmm-tenure-sentinel";
+const USER_AGENT = "bff-skills/hodlmm-tenure-protector";
 
 // Tenure risk thresholds (seconds since last Bitcoin block)
 const TENURE_GREEN_MAX_S = 600;     // 0–10 min: normal, safe
@@ -152,7 +152,7 @@ interface PoolRisk {
   rationale: string;
 }
 
-interface SentinelResult {
+interface ProtectorResult {
   status: "ok" | "degraded" | "error";
   decision: "SAFE" | "CAUTION" | "WIDEN" | "SHELTER";
   action: string;
@@ -420,7 +420,7 @@ function assessPoolRisk(pool: HodlmmPool, tenure: TenureStatus): PoolRisk | null
   };
 }
 
-function overallDecision(tenure: TenureStatus, pools: PoolRisk[]): { decision: SentinelResult["decision"]; action: string } {
+function overallDecision(tenure: TenureStatus, pools: PoolRisk[]): { decision: ProtectorResult["decision"]; action: string } {
   const hasExitRisk = pools.some(p => p.spread_action === "EXIT_RISK");
   const hasWidenUrgent = pools.some(p => p.spread_action === "WIDEN_URGENT");
   const hasWiden = pools.some(p => p.spread_action === "WIDEN");
@@ -470,7 +470,7 @@ function overallDecision(tenure: TenureStatus, pools: PoolRisk[]): { decision: S
 
 // ── Error helper ───────────────────────────────────────────────────────────────
 
-function failSafeShelter(sourcesUsed: string[], sourcesFailed: string[], errorMsg: string): SentinelResult {
+function failSafeResult(sourcesUsed: string[], sourcesFailed: string[], errorMsg: string): ProtectorResult {
   return {
     status: "error",
     decision: "SHELTER",
@@ -536,7 +536,7 @@ async function runDoctor(): Promise<void> {
     status: noneOk ? "error" : allOk ? "ok" : "degraded",
     checks,
     message: allOk
-      ? "All 5 data sources reachable. Tenure sentinel ready."
+      ? "All 5 data sources reachable. Tenure protector ready."
       : noneOk
         ? "All data sources unreachable. Check network connectivity."
         : `Some sources degraded: ${Object.entries(checks).filter(([, v]) => v === "fail").map(([k]) => k).join(", ")}`,
@@ -546,7 +546,7 @@ async function runDoctor(): Promise<void> {
   process.exit(allOk ? 0 : noneOk ? 3 : 1);
 }
 
-async function runSentinel(opts: { pool?: string; verbose?: boolean }): Promise<void> {
+async function runProtector(opts: { pool?: string; verbose?: boolean }): Promise<void> {
   const sourcesUsed: string[] = [];
   const sourcesFailed: string[] = [];
 
@@ -572,7 +572,7 @@ async function runSentinel(opts: { pool?: string; verbose?: boolean }): Promise<
     ]);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : "Unknown error";
-    const result = failSafeShelter(sourcesUsed, sourcesFailed, msg);
+    const result = failSafeResult(sourcesUsed, sourcesFailed, msg);
     console.log(JSON.stringify(result, null, 2));
     process.exit(3);
     return;
@@ -580,7 +580,7 @@ async function runSentinel(opts: { pool?: string; verbose?: boolean }): Promise<
 
   // Must have blocks data for tenure calculation
   if (!blocksData?.results?.[0] && !nodeInfo) {
-    const result = failSafeShelter(sourcesUsed, sourcesFailed, "No block data available");
+    const result = failSafeResult(sourcesUsed, sourcesFailed, "No block data available");
     console.log(JSON.stringify(result, null, 2));
     process.exit(3);
     return;
@@ -611,7 +611,7 @@ async function runSentinel(opts: { pool?: string; verbose?: boolean }): Promise<
   // Overall decision
   const { decision, action } = overallDecision(tenure, poolRisks);
 
-  const result: SentinelResult = {
+  const result: ProtectorResult = {
     status: sourcesFailed.length === 0 ? "ok" : "degraded",
     decision,
     action,
@@ -637,7 +637,7 @@ async function runSentinel(opts: { pool?: string; verbose?: boolean }): Promise<
 
 // ── Exportable core function ───────────────────────────────────────────────────
 
-export async function assessTenureRisk(pool?: string): Promise<SentinelResult> {
+export async function assessTenureRisk(pool?: string): Promise<ProtectorResult> {
   const sourcesUsed: string[] = [];
   const sourcesFailed: string[] = [];
 
@@ -653,7 +653,7 @@ export async function assessTenureRisk(pool?: string): Promise<SentinelResult> {
   ]);
 
   if (!blocksData?.results?.[0]) {
-    return failSafeShelter(sourcesUsed, sourcesFailed, "No block data");
+    return failSafeResult(sourcesUsed, sourcesFailed, "No block data");
   }
 
   const tenure = computeTenureStatus(nodeInfo ?? {} as NodeInfo, blocksData.results[0], burnData);
@@ -676,7 +676,7 @@ export async function assessTenureRisk(pool?: string): Promise<SentinelResult> {
 const program = new Command();
 
 program
-  .name("hodlmm-tenure-sentinel")
+  .name("hodlmm-tenure-protector")
   .description("Nakamoto tenure-aware risk monitor for HODLMM concentrated liquidity positions")
   .version("1.0.0");
 
@@ -697,7 +697,7 @@ program
   .description("Assess current tenure risk for HODLMM positions")
   .option("--pool <id>", "Filter to specific HODLMM pool (e.g., dlmm_1)")
   .option("--verbose", "Include full burn block history in output")
-  .action(runSentinel);
+  .action(runProtector);
 
 if (import.meta.main) {
   program.parseAsync(process.argv).catch((err: unknown) => {

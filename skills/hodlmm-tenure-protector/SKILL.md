@@ -1,23 +1,23 @@
 ---
-name: hodlmm-tenure-sentinel
+name: hodlmm-tenure-protector
 description: "Nakamoto tenure-aware risk monitor that protects HODLMM concentrated liquidity positions from toxic arbitrage flow during stale Bitcoin block tenures — the only skill that correlates Bitcoin L1 block timing with L2 LP risk."
 metadata:
   author: "cliqueengagements"
   author-agent: "Micro Basilisk (Agent 77) — SP219TWC8G12CSX5AB093127NC82KYQWEH8ADD1AY | bc1qzh2z92dlvccxq5w756qppzz8fymhgrt2dv8cf5"
   user-invocable: "true"
   arguments: "doctor | install-packs | run [--pool <id>] [--verbose]"
-  entry: "hodlmm-tenure-sentinel/hodlmm-tenure-sentinel.ts"
+  entry: "hodlmm-tenure-protector/hodlmm-tenure-protector.ts"
   requires: ""
   tags: "defi, read-only, mainnet-only, infrastructure"
 ---
 
-# hodlmm-tenure-sentinel
+# hodlmm-tenure-protector
 
 ## What it does
 
 Monitors the age of the current Bitcoin block tenure and correlates it with HODLMM concentrated liquidity risk. Under Nakamoto, Stacks produces fast blocks (~5s) within a "tenure" anchored to each Bitcoin block. Between Bitcoin blocks, L2 prices can drift from L1 reality — creating a window where informed arbitrageurs exploit stale-priced HODLMM bins.
 
-The sentinel reads real-time Bitcoin block timing from Hiro APIs, computes tenure freshness, and assesses every active HODLMM pool for toxic flow exposure based on tenure age, pool volume, and bin width.
+The protector reads real-time Bitcoin block timing from Hiro APIs, computes tenure freshness, and assesses every active HODLMM pool for toxic flow exposure based on tenure age, pool volume, and bin width.
 
 Output is a four-level risk signal:
 - **GREEN / SAFE** — Tenure fresh, bins safe at current spreads
@@ -46,14 +46,14 @@ This is the HODLMM circuit breaker: it tells LPs exactly when their money is saf
 Validates all 5 data sources: Hiro node info, Hiro blocks, Hiro burn blocks, Bitflow HODLMM pools, Hiro fees.
 
 ```bash
-bun run skills/hodlmm-tenure-sentinel/hodlmm-tenure-sentinel.ts doctor
+bun run skills/hodlmm-tenure-protector/hodlmm-tenure-protector.ts doctor
 ```
 
 ### `install-packs`
 No additional packs required. Uses native `fetch` for all API calls.
 
 ```bash
-bun run skills/hodlmm-tenure-sentinel/hodlmm-tenure-sentinel.ts install-packs
+bun run skills/hodlmm-tenure-protector/hodlmm-tenure-protector.ts install-packs
 ```
 
 ### `run`
@@ -61,13 +61,13 @@ Assesses current tenure risk across all HODLMM pools (or a specific pool).
 
 ```bash
 # All pools
-bun run skills/hodlmm-tenure-sentinel/hodlmm-tenure-sentinel.ts run
+bun run skills/hodlmm-tenure-protector/hodlmm-tenure-protector.ts run
 
 # Specific pool
-bun run skills/hodlmm-tenure-sentinel/hodlmm-tenure-sentinel.ts run --pool dlmm_1
+bun run skills/hodlmm-tenure-protector/hodlmm-tenure-protector.ts run --pool dlmm_1
 
 # With full burn block history
-bun run skills/hodlmm-tenure-sentinel/hodlmm-tenure-sentinel.ts run --verbose
+bun run skills/hodlmm-tenure-protector/hodlmm-tenure-protector.ts run --verbose
 ```
 
 ## Output contract
