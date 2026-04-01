@@ -34,6 +34,8 @@ description: "Agent behavioral rules for the Nakamoto tenure-aware HODLMM risk m
 | `pools[].spread_action` | Per-pool instruction: HOLD / WIDEN / WIDEN_URGENT / EXIT_RISK |
 | `pools[].toxic_flow_exposure` | Per-pool arb risk: LOW / MODERATE / HIGH / CRITICAL |
 | `pools[].recommended_spread_bps` | Target bin width in basis points |
+| `pools[].position_overlap` | (--wallet only) Bin overlap with active range: NONE/PARTIAL/FULL |
+| `pools[].bin_price_deviation` | Active bin price deviation % — measures actual L2/L1 lag |
 | `timing.avg_gap_s` | Recent average BTC block interval — context for predictions |
 | `status` | Data health: ok / degraded / error |
 | `exit code` | 0=safe, 1=widen, 2=shelter, 3=error |

@@ -15,6 +15,8 @@ import { Command } from "commander";
 
 const HIRO_BASE = "https://api.mainnet.hiro.so";
 const BITFLOW_POOLS = "https://bff.bitflowapis.finance/api/app/v1/pools";
+const BITFLOW_USER_POSITIONS = "https://bff.bitflowapis.finance/api/app/v1/users";
+const BITFLOW_BIN_QUOTES = "https://bff.bitflowapis.finance/api/quotes/v1/bins";
 const USER_AGENT = "bff-skills/hodlmm-tenure-protector";
 
 // Tenure risk thresholds (seconds since last Bitcoin block)
@@ -109,6 +111,62 @@ interface PoolsApiResponse {
   pools?: HodlmmPool[];
 }
 
+// ── Position-level types (--wallet) ───────────────────────────────────────────
+
+interface UserBin {
+  binId: number | string;
+  binStep?: number | string;
+  priceX?: number | string;
+  priceY?: number | string;
+  liquidityX?: number | string;
+  liquidityY?: number | string;
+  liquidity?: number | string;
+  isActive?: boolean;
+}
+
+interface UserBinsResponse {
+  bins?: UserBin[];
+  data?: UserBin[];
+  results?: UserBin[];
+}
+
+// ── Bin quote types (price validation) ────────────────────────────────────────
+
+interface BinQuote {
+  binId: number | string;
+  priceX?: number | string;
+  priceY?: number | string;
+  price?: number | string;
+  isActive?: boolean;
+  activeId?: number | string;
+}
+
+interface BinQuotesResponse {
+  bins?: BinQuote[];
+  data?: BinQuote[];
+  results?: BinQuote[];
+  activeBinId?: number | string;
+  activePrice?: number | string;
+}
+
+interface PositionOverlap {
+  pool_id: string;
+  wallet: string;
+  total_bins: number;
+  active_bins: number;
+  bins_in_active_range: number;
+  overlap_ratio: number;
+  position_exposure: "NONE" | "PARTIAL" | "FULL";
+}
+
+interface BinPriceDeviation {
+  pool_id: string;
+  active_bin_id: number | null;
+  active_bin_price: number | null;
+  price_deviation_pct: number | null;
+  price_source: "bin_quotes" | "unavailable";
+}
+
 interface TenureStatus {
   burn_block_height: number;
   burn_block_time_iso: string;
@@ -150,6 +208,8 @@ interface PoolRisk {
   spread_action: "HOLD" | "WIDEN" | "WIDEN_URGENT" | "EXIT_RISK";
   toxic_flow_exposure: "LOW" | "MODERATE" | "HIGH" | "CRITICAL";
   rationale: string;
+  position_overlap?: PositionOverlap;
+  bin_price_deviation?: BinPriceDeviation;
 }
 
 interface ProtectorResult {
@@ -221,6 +281,19 @@ async function fetchPools(): Promise<HodlmmPool[]> {
 
 async function fetchStxFees(): Promise<number> {
   return fetchJson<number>(`${HIRO_BASE}/v2/fees/transfer`);
+}
+
+async function fetchUserBins(wallet: string, poolId: string): Promise<UserBin[]> {
+  const url = `${BITFLOW_USER_POSITIONS}/${wallet}/positions/${poolId}/bins`;
+  const data = await fetchJson<UserBin[] | UserBinsResponse>(url);
+  if (Array.isArray(data)) return data;
+  const resp = data as UserBinsResponse;
+  return resp.bins ?? resp.data ?? resp.results ?? [];
+}
+
+async function fetchBinQuotes(poolId: string): Promise<BinQuotesResponse> {
+  const url = `${BITFLOW_BIN_QUOTES}/${poolId}`;
+  return fetchJson<BinQuotesResponse>(url);
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -327,7 +400,113 @@ function computeTimingStats(burnBlocks: BurnBlock[]): TimingStats {
   };
 }
 
-function assessPoolRisk(pool: HodlmmPool, tenure: TenureStatus): PoolRisk | null {
+// ── Position-level analysis ───────────────────────────────────────────────────
+
+function analyzePositionOverlap(
+  userBins: UserBin[],
+  binQuotes: BinQuotesResponse | null,
+  poolId: string,
+  wallet: string,
+): PositionOverlap {
+  const totalBins = userBins.length;
+
+  // Determine active bin ID from quotes response
+  let activeBinId: number | null = null;
+  if (binQuotes?.activeBinId !== undefined) {
+    activeBinId = Number(binQuotes.activeBinId);
+  } else {
+    // Try to find active bin from the quotes list
+    const quoteBins = binQuotes?.bins ?? binQuotes?.data ?? binQuotes?.results ?? [];
+    const activeBin = quoteBins.find(b => b.isActive);
+    if (activeBin) activeBinId = Number(activeBin.binId);
+  }
+
+  // Count user bins that are active or near the active bin
+  // A bin is "in range" if it is within +-5 bins of the active bin
+  const ACTIVE_RANGE_HALF_WIDTH = 5;
+  let activeBins = 0;
+  let binsInActiveRange = 0;
+
+  for (const bin of userBins) {
+    const binId = Number(bin.binId);
+    if (bin.isActive) activeBins++;
+    if (activeBinId !== null && Math.abs(binId - activeBinId) <= ACTIVE_RANGE_HALF_WIDTH) {
+      binsInActiveRange++;
+    }
+  }
+
+  const overlapRatio = totalBins > 0 ? binsInActiveRange / totalBins : 0;
+  let positionExposure: PositionOverlap["position_exposure"] = "NONE";
+  if (overlapRatio > 0.5) positionExposure = "FULL";
+  else if (overlapRatio > 0) positionExposure = "PARTIAL";
+
+  return {
+    pool_id: poolId,
+    wallet,
+    total_bins: totalBins,
+    active_bins: activeBins,
+    bins_in_active_range: binsInActiveRange,
+    overlap_ratio: Math.round(overlapRatio * 1000) / 1000,
+    position_exposure: positionExposure,
+  };
+}
+
+function analyzeBinPriceDeviation(binQuotes: BinQuotesResponse | null, poolId: string): BinPriceDeviation {
+  if (!binQuotes) {
+    return { pool_id: poolId, active_bin_id: null, active_bin_price: null, price_deviation_pct: null, price_source: "unavailable" };
+  }
+
+  const quoteBins = binQuotes.bins ?? binQuotes.data ?? binQuotes.results ?? [];
+
+  // Find active bin
+  let activeBinId: number | null = null;
+  let activeBinPrice: number | null = null;
+
+  if (binQuotes.activeBinId !== undefined) {
+    activeBinId = Number(binQuotes.activeBinId);
+  }
+  if (binQuotes.activePrice !== undefined) {
+    activeBinPrice = Number(binQuotes.activePrice);
+  }
+
+  if (activeBinId === null || activeBinPrice === null) {
+    for (const bin of quoteBins) {
+      if (bin.isActive) {
+        activeBinId = Number(bin.binId);
+        activeBinPrice = Number(bin.price ?? bin.priceX ?? 0);
+        break;
+      }
+    }
+  }
+
+  // Compute deviation: compare active bin price to the average of neighboring bins
+  // A large deviation suggests price is lagging or leading
+  let deviationPct: number | null = null;
+  if (activeBinId !== null && activeBinPrice !== null && activeBinPrice > 0) {
+    const neighbors = quoteBins
+      .filter(b => {
+        const id = Number(b.binId);
+        return Math.abs(id - activeBinId!) <= 3 && id !== activeBinId;
+      })
+      .map(b => Number(b.price ?? b.priceX ?? 0))
+      .filter(p => p > 0);
+
+    if (neighbors.length > 0) {
+      const avgNeighbor = neighbors.reduce((a, b) => a + b, 0) / neighbors.length;
+      deviationPct = Math.round(Math.abs(activeBinPrice - avgNeighbor) / avgNeighbor * 10000) / 100;
+    }
+  }
+
+  return {
+    pool_id: poolId,
+    active_bin_id: activeBinId,
+    active_bin_price: activeBinPrice,
+    price_deviation_pct: deviationPct,
+    price_source: "bin_quotes",
+  };
+}
+
+function assessPoolRisk(pool: HodlmmPool, tenure: TenureStatus, positionOverlap?: PositionOverlap, binPriceDeviation?: BinPriceDeviation): PoolRisk | null {
   const tvl = toNum(pool.tvlUsd, 0);
   const apr = toNum(pool.apr, 0);
   const binStep = toNum(pool.binStep, 10);
@@ -404,6 +583,35 @@ function assessPoolRisk(pool: HodlmmPool, tenure: TenureStatus): PoolRisk | null
       break;
   }
 
+  // ── Position-level downgrade: if wallet bins don't overlap active range, reduce risk ──
+  if (positionOverlap && positionOverlap.position_exposure === "NONE") {
+    // LP's bins are entirely in outer range — no toxic flow exposure regardless of tenure
+    toxicExposure = "LOW";
+    spreadAction = "HOLD";
+    rationale += " [Position override: wallet bins are outside active trading range — zero toxic flow exposure.]";
+  } else if (positionOverlap && positionOverlap.position_exposure === "PARTIAL") {
+    // Partial overlap — reduce severity by one level
+    if (toxicExposure === "CRITICAL") toxicExposure = "HIGH";
+    else if (toxicExposure === "HIGH") toxicExposure = "MODERATE";
+    if (spreadAction === "EXIT_RISK") spreadAction = "WIDEN_URGENT";
+    else if (spreadAction === "WIDEN_URGENT") spreadAction = "WIDEN";
+    rationale += ` [Position override: only ${positionOverlap.bins_in_active_range}/${positionOverlap.total_bins} bins overlap active range — reduced exposure.]`;
+  }
+
+  // ── Bin price deviation: if deviation is measurable, adjust toxic flow assessment ──
+  if (binPriceDeviation && binPriceDeviation.price_deviation_pct !== null) {
+    const devPct = binPriceDeviation.price_deviation_pct;
+    if (devPct > 2.0 && tenure.risk_level !== "GREEN") {
+      // Significant price deviation during stale tenure — confirms toxic flow risk
+      if (toxicExposure === "LOW") toxicExposure = "MODERATE";
+      else if (toxicExposure === "MODERATE") toxicExposure = "HIGH";
+      rationale += ` [Bin price deviation ${devPct.toFixed(2)}% detected — confirms L2/L1 price lag.]`;
+    } else if (devPct < 0.5 && tenure.risk_level !== "GREEN") {
+      // Minimal deviation despite stale tenure — prices are tracking well
+      rationale += ` [Bin price deviation only ${devPct.toFixed(2)}% — L2 prices tracking L1 despite tenure age.]`;
+    }
+  }
+
   return {
     pool_id: poolId,
     pair,
@@ -417,6 +625,8 @@ function assessPoolRisk(pool: HodlmmPool, tenure: TenureStatus): PoolRisk | null
     spread_action: spreadAction,
     toxic_flow_exposure: toxicExposure,
     rationale,
+    position_overlap: positionOverlap,
+    bin_price_deviation: binPriceDeviation,
   };
 }
 
@@ -546,7 +756,7 @@ async function runDoctor(): Promise<void> {
   process.exit(allOk ? 0 : noneOk ? 3 : 1);
 }
 
-async function runProtector(opts: { pool?: string; verbose?: boolean }): Promise<void> {
+async function runProtector(opts: { pool?: string; verbose?: boolean; wallet?: string }): Promise<void> {
   const sourcesUsed: string[] = [];
   const sourcesFailed: string[] = [];
 
@@ -595,12 +805,50 @@ async function runProtector(opts: { pool?: string; verbose?: boolean }): Promise
   const burnBlocks = burnData?.results ?? [];
   const timing = computeTimingStats(burnBlocks);
 
-  // Assess each HODLMM pool
+  // Assess each HODLMM pool — with optional position-level and bin price analysis
   const dlmmPools = filterDlmmPools(pools, opts.pool);
+
+  // Pre-fetch bin quotes for all pools in parallel (graceful degradation on failure)
+  const binQuotesMap = new Map<string, BinQuotesResponse | null>();
+  const binQuotePromises = dlmmPools.map(async (pool) => {
+    const poolId = pool.poolId ?? pool.pool_id ?? "unknown";
+    try {
+      const quotes = await fetchBinQuotes(poolId);
+      binQuotesMap.set(poolId, quotes);
+      if (!sourcesUsed.includes("bitflow-bin-quotes")) sourcesUsed.push("bitflow-bin-quotes");
+    } catch {
+      binQuotesMap.set(poolId, null);
+      if (!sourcesFailed.includes("bitflow-bin-quotes")) sourcesFailed.push("bitflow-bin-quotes");
+    }
+  });
+  await Promise.all(binQuotePromises);
+
+  // If --wallet provided, fetch user positions for each pool in parallel
+  const positionMap = new Map<string, PositionOverlap | undefined>();
+  if (opts.wallet) {
+    const posPromises = dlmmPools.map(async (pool) => {
+      const poolId = pool.poolId ?? pool.pool_id ?? "unknown";
+      try {
+        const userBins = await fetchUserBins(opts.wallet!, poolId);
+        if (userBins.length > 0) {
+          const overlap = analyzePositionOverlap(userBins, binQuotesMap.get(poolId) ?? null, poolId, opts.wallet!);
+          positionMap.set(poolId, overlap);
+          if (!sourcesUsed.includes("bitflow-user-positions")) sourcesUsed.push("bitflow-user-positions");
+        }
+      } catch {
+        if (!sourcesFailed.includes("bitflow-user-positions")) sourcesFailed.push("bitflow-user-positions");
+      }
+    });
+    await Promise.all(posPromises);
+  }
 
   const poolRisks: PoolRisk[] = [];
   for (const pool of dlmmPools) {
-    const risk = assessPoolRisk(pool, tenure);
+    const poolId = pool.poolId ?? pool.pool_id ?? "unknown";
+    const posOverlap = positionMap.get(poolId);
+    const binQuotes = binQuotesMap.get(poolId) ?? null;
+    const binDeviation = analyzeBinPriceDeviation(binQuotes, poolId);
+    const risk = assessPoolRisk(pool, tenure, posOverlap, binDeviation);
     if (risk) poolRisks.push(risk);
   }
 
@@ -637,7 +885,7 @@ async function runProtector(opts: { pool?: string; verbose?: boolean }): Promise
 
 // ── Exportable core function ───────────────────────────────────────────────────
 
-export async function assessTenureRisk(pool?: string): Promise<ProtectorResult> {
+export async function assessTenureRisk(pool?: string, wallet?: string): Promise<ProtectorResult> {
   const sourcesUsed: string[] = [];
   const sourcesFailed: string[] = [];
 
@@ -660,7 +908,43 @@ export async function assessTenureRisk(pool?: string): Promise<ProtectorResult> 
   const timing = computeTimingStats(burnData?.results ?? []);
 
   const dlmmPools = filterDlmmPools(pools, pool);
-  const poolRisks = dlmmPools.map(p => assessPoolRisk(p, tenure)).filter(Boolean) as PoolRisk[];
+
+  // Fetch bin quotes for all pools
+  const binQuotesMap = new Map<string, BinQuotesResponse | null>();
+  await Promise.all(dlmmPools.map(async (p) => {
+    const pid = p.poolId ?? p.pool_id ?? "unknown";
+    try {
+      binQuotesMap.set(pid, await fetchBinQuotes(pid));
+      if (!sourcesUsed.includes("bitflow-bin-quotes")) sourcesUsed.push("bitflow-bin-quotes");
+    } catch {
+      binQuotesMap.set(pid, null);
+      if (!sourcesFailed.includes("bitflow-bin-quotes")) sourcesFailed.push("bitflow-bin-quotes");
+    }
+  }));
+
+  // Fetch user positions if wallet provided
+  const positionMap = new Map<string, PositionOverlap | undefined>();
+  if (wallet) {
+    await Promise.all(dlmmPools.map(async (p) => {
+      const pid = p.poolId ?? p.pool_id ?? "unknown";
+      try {
+        const userBins = await fetchUserBins(wallet, pid);
+        if (userBins.length > 0) {
+          positionMap.set(pid, analyzePositionOverlap(userBins, binQuotesMap.get(pid) ?? null, pid, wallet));
+          if (!sourcesUsed.includes("bitflow-user-positions")) sourcesUsed.push("bitflow-user-positions");
+        }
+      } catch {
+        if (!sourcesFailed.includes("bitflow-user-positions")) sourcesFailed.push("bitflow-user-positions");
+      }
+    }));
+  }
+
+  const poolRisks = dlmmPools.map(p => {
+    const pid = p.poolId ?? p.pool_id ?? "unknown";
+    const binDev = analyzeBinPriceDeviation(binQuotesMap.get(pid) ?? null, pid);
+    return assessPoolRisk(p, tenure, positionMap.get(pid), binDev);
+  }).filter(Boolean) as PoolRisk[];
+
   const { decision, action } = overallDecision(tenure, poolRisks);
 
   return {
@@ -696,6 +980,7 @@ program
   .command("run")
   .description("Assess current tenure risk for HODLMM positions")
   .option("--pool <id>", "Filter to specific HODLMM pool (e.g., dlmm_1)")
+  .option("--wallet <address>", "STX address for position-level risk (checks if your bins overlap active range)")
   .option("--verbose", "Include full burn block history in output")
   .action(runProtector);
 
