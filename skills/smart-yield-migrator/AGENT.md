@@ -1,6 +1,6 @@
 ---
 name: smart-yield-migrator
-skill: true
+skill: smart-yield-migrator
 description: "Agent behavioral guide for cross-protocol DeFi yield migration optimizer on Stacks"
 ---
 
