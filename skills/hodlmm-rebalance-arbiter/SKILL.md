@@ -1,6 +1,6 @@
 ---
 name: hodlmm-rebalance-arbiter
-description: "Decision gate that consumes 3 independent signals — bin drift, tenure safety, and sBTC peg health — to produce a single REBALANCE, BLOCKED, or IN_RANGE verdict for HODLMM concentrated liquidity positions."
+description: "Decision gate that consumes 2 independent signals — bin drift and sBTC peg health — to produce a single REBALANCE, BLOCKED, or IN_RANGE verdict for HODLMM concentrated liquidity positions."
 metadata:
   author: "cliqueengagements"
   author-agent: "Micro Basilisk (Agent 77) — SP219TWC8G12CSX5AB093127NC82KYQWEH8ADD1AY | bc1qzh2z92dlvccxq5w756qppzz8fymhgrt2dv8cf5"
@@ -17,15 +17,14 @@ metadata:
 
 Answers one question for HODLMM liquidity providers: **"Should I rebalance right now, or wait?"**
 
-Running 3 monitoring skills independently gives you 3 separate signals — but no verdict. An LP still has to mentally cross-reference bin drift, Bitcoin block timing, and sBTC peg health across 12+ possible combinations. The arbiter encodes the operational logic into a single decision gate.
+Running 2 monitoring skills independently gives you 2 separate signals — but no verdict. An LP still has to cross-reference bin drift and sBTC peg health manually. The arbiter encodes the operational logic into a single decision gate.
 
-It fetches data from the same sources as hodlmm-bin-guardian, hodlmm-tenure-protector, and sbtc-proof-of-reserve, then applies a priority matrix:
+It evaluates the same dimensions as hodlmm-bin-guardian and sbtc-proof-of-reserve, then applies a priority matrix:
 
 | Scenario | Decision |
 |---|---|
 | All GREEN | **REBALANCE** — safe to move |
-| One YELLOW, rest GREEN | **REBALANCE** — acceptable risk |
-| Two+ YELLOW | **BLOCKED** — environment degrading on multiple fronts |
+| Reserve YELLOW | **REBALANCE** — acceptable risk |
 | Any RED | **BLOCKED** — specific reason provided |
 | Any ERROR | **DEGRADED** — fix data sources first |
 | Bins in range | **IN_RANGE** — no rebalance needed |
@@ -34,23 +33,25 @@ The skill does NOT execute transactions. It outputs a verdict with evidence so t
 
 ## Why agents need it
 
-Monitoring without a decision layer is noise. bin-guardian says REBALANCE, but tenure-protector says RED — does the LP go or wait? Today, nobody answers that question. The arbiter fills the gap between monitoring and action in the HODLMM LP lifecycle.
+Monitoring without a decision layer is noise. bin-guardian says REBALANCE, but is the sBTC peg healthy enough to move capital? Today, nobody answers that question. The arbiter fills the gap between monitoring and action in the HODLMM LP lifecycle.
 
-Key insight: sometimes the most profitable move is doing nothing. During stale tenures or peg instability, executing a rebalance at bad prices costs more than earning zero fees in a safe position. The arbiter enforces this discipline.
+Key insight: sometimes the most profitable move is doing nothing. During peg instability, executing a rebalance risks value loss. Earning zero fees in a safe position is better than rebalancing into instability. The arbiter enforces this discipline.
+
+v2 note: The original submission included a third signal (Bitcoin tenure timing) which was removed after community review identified a flawed premise — L1 has no price awareness, so tenure staleness is not a valid safety signal. Rather than replacing it with something cosmetic, we stripped it out. Two rock-solid signals beat three with a weak link.
 
 ## Safety notes
 
 - **Read-only** — never executes transactions, never moves funds
 - **Fail-safe default** — missing, malformed, or stale data always pushes toward WAIT or DEGRADED, never toward REBALANCE
 - **Double YELLOW = WAIT** — one caution signal is acceptable risk; two simultaneous caution signals mean the environment is degrading and action should be deferred
-- **Silence locks the gate** — you need 3 positive signals to unlock REBALANCE; any gap in data blocks action
+- **Silence locks the gate** — you need 2 positive signals to unlock REBALANCE; any gap in data blocks action
 - **No API keys required** — all data from public Bitflow, Hiro, and mempool.space endpoints
 - **Structured exit codes** — 0 (rebalance/in_range), 1 (blocked), 3 (degraded/error)
 
 ## Commands
 
 ### `doctor`
-Verifies all 7 data sources across all 3 signals: Bitflow Quotes, Bitflow App, Bitflow Bins, Hiro Stacks, Hiro Burn Blocks, sBTC Supply Contract, mempool.space.
+Verifies all 8 data sources: Bitflow Quotes, Bitflow App, Bitflow Bins, Hiro Stacks, sBTC Registry, sBTC Supply Contract, mempool.space, and bech32m self-test.
 
 ```bash
 bun run skills/hodlmm-rebalance-arbiter/hodlmm-rebalance-arbiter.ts doctor
@@ -64,7 +65,7 @@ bun run skills/hodlmm-rebalance-arbiter/hodlmm-rebalance-arbiter.ts install-pack
 ```
 
 ### `run`
-Fetches all 3 signals in parallel, applies the priority matrix, and outputs the decision.
+Fetches both signals in parallel, applies the priority matrix, and outputs the decision.
 
 ```bash
 # Default pool (dlmm_1)
@@ -100,14 +101,6 @@ HODLMM pool ID to evaluate.
       "pool_id": "dlmm_1",
       "pair": "sBTC/USDCx"
     },
-    "tenure_protector": {
-      "color": "GREEN | YELLOW | RED | ERROR",
-      "tenure_age_s": 120,
-      "risk_level": "GREEN",
-      "burn_block_height": 943140,
-      "predicted_next_block_s": 612,
-      "stacks_tip_height": 7428849
-    },
     "sbtc_reserve": {
       "color": "GREEN | YELLOW | RED | ERROR",
       "reserve_ratio": 1.002,
@@ -134,13 +127,12 @@ HODLMM pool ID to evaluate.
 {
   "status": "ok",
   "decision": "BLOCKED",
-  "reason": "Rebalance needed but blocked — tenure stale (18.5m). Executing at stale prices risks adverse fill. Wait for fresh Bitcoin block.",
+  "reason": "Rebalance needed but blocked — sBTC peg unhealthy (ratio: 0.9820). Moving capital during de-peg risks value loss.",
   "signals": {
     "bin_guardian": { "color": "RED", "needs_rebalance": true },
-    "tenure_protector": { "color": "RED", "tenure_age_s": 1110, "risk_level": "RED" },
-    "sbtc_reserve": { "color": "GREEN", "reserve_ratio": 1.002 }
+    "sbtc_reserve": { "color": "RED", "reserve_ratio": 0.982, "recommendation": "sBTC under-collateralized. Do not rebalance into sBTC-paired pools." }
   },
-  "blockers": ["tenure_protector: RED — tenure stale (18.5m), prices unreliable"],
+  "blockers": ["sbtc_reserve: RED — reserve ratio 0.9820, peg unhealthy"],
   "retry_after": "2026-04-02T01:15:00.000Z"
 }
 ```
@@ -153,8 +145,7 @@ HODLMM pool ID to evaluate.
 | Bitflow App API | `/api/app/v1/pools` | bin_guardian — TVL, volume, APR |
 | Bitflow Bins API | `/api/quotes/v1/bins/{pool_id}` | bin_guardian — active bin, prices |
 | Bitflow User Positions | `/api/app/v1/users/{addr}/positions/{pool}/bins` | bin_guardian — LP bin positions |
-| Hiro Node Info | `/v2/info` | tenure_protector — block heights |
-| Hiro Burn Blocks | `/extended/v2/burn-blocks` | tenure_protector — BTC block timing |
+| Hiro Node Info | `/v2/info` | sbtc_reserve — block heights |
 | sBTC Contract | `call-read/get-total-supply` | sbtc_reserve — circulating supply |
 | sBTC Registry | `call-read/get-current-aggregate-pubkey` | sbtc_reserve — signer pubkey |
 | mempool.space | `/api/address/{addr}` | sbtc_reserve — BTC reserve balance |
@@ -166,7 +157,7 @@ This skill is the decision layer in the HODLMM LP lifecycle:
 | Phase | Skill | Role |
 |-------|-------|------|
 | Entry | usdcx-yield-optimizer | Where to deploy capital |
-| Monitor | bin-guardian, tenure-protector, sbtc-reserve | Watch for drift, timing risk, peg health |
+| Monitor | bin-guardian, sbtc-reserve | Watch for drift and peg health |
 | **Act** | **hodlmm-rebalance-arbiter** | **Should I rebalance now? GO or WAIT** |
 | Optimize | smart-yield-migrator, hermetica-yield-rotator | Move between protocols |
 | Exit | hodlmm-emergency-exit | Get out when things break |
@@ -176,7 +167,6 @@ The arbiter sits between monitoring and action. Without it, monitoring skills ou
 ## Known constraints
 
 - Read-only — outputs a decision but cannot execute the rebalance itself. The LP or a future executor skill acts on the verdict.
-- Bitcoin block times are inherently unpredictable. Tenure-based WAIT decisions are probabilistic guidance, not guarantees.
 - sBTC reserve check uses the full Golden Chain derivation (aggregate pubkey → P2TR address → BTC balance). If the sbtc-registry contract changes its pubkey format, the derivation will fail gracefully (ERROR → DEGRADED).
-- CoinGecko rate limits may affect BTC price fetches. The skill retries once on 429 with 1.5s backoff.
+- v2 removed the tenure signal after community review (PR #125 feedback from @JakeBlockchain) identified a flawed premise. The skill is leaner and every remaining signal is defensible.
 - The arbiter requires `--wallet` — it cannot make a rebalance decision without knowing which bins the LP holds.
