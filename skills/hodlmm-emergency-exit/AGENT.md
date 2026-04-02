@@ -116,7 +116,7 @@ Always return strict JSON. Never return partial JSON or plain text.
 {
   "status": "success",
   "decision": "EXIT",
-  "action": "EXIT — Reserve signal RED — sBTC peg unsafe (reserve_ratio: 0.993, score: 0)",
+  "action": "[CRITICAL] HODLMM Exit Triggered: Reserve signal RED — sBTC peg unsafe (reserve_ratio: 0.993, score: 0)",
   "data": {
     "reserve_audit": { "status": "critical", "score": 0, "hodlmm_signal": "RED", "reserve_ratio": 0.993, "..." : "..." },
     "position_check": {
@@ -179,7 +179,7 @@ Always return strict JSON. Never return partial JSON or plain text.
 {
   "status": "error",
   "decision": "EXIT",
-  "action": "ERROR — EVALUATION_FAILED: message. Treat as EXIT — do not proceed with HODLMM operations.",
+  "action": "[CRITICAL] HODLMM Exit Triggered: EVALUATION_FAILED — message. Treat as EXIT — do not proceed with HODLMM operations.",
   "data": {
     "reserve_audit": null,
     "position_check": null,

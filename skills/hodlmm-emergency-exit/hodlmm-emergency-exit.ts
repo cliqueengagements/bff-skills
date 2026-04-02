@@ -136,6 +136,7 @@ async function fetchJson<T>(url: string, opts: RequestInit = {}): Promise<T> {
       await new Promise(r => setTimeout(r, 1000));
       const retry = await fetch(url, {
         ...opts,
+        signal: controller.signal,
         headers: { "User-Agent": "bff-skills/hodlmm-emergency-exit", ...(opts.headers ?? {}) },
       });
       if (!retry.ok) throw new Error(`HTTP ${retry.status} from ${url} (after retry)`);
