@@ -182,7 +182,7 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
       },
     });
     if (res.status === 429) {
-      await new Promise(r => setTimeout(r, 1500));
+      await new Promise(r => setTimeout(r, 1500 + Math.random() * 1000));
       const retry = await fetch(url, {
         ...init,
         headers: { "User-Agent": USER_AGENT, Accept: "application/json", ...(init?.headers ?? {}) },
@@ -741,6 +741,75 @@ async function runDoctor(): Promise<void> {
     checks.push({ name: "mempool.space", ok: false, detail: e instanceof Error ? e.message : String(e) });
   }
 
+  // 8. Bech32m self-test (BIP-350 test vectors)
+  try {
+    const CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+    const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+
+    function polymodTest(values: number[]): number {
+      let chk = 1;
+      for (const v of values) {
+        const b = chk >> 25;
+        chk = ((chk & 0x1ffffff) << 5) ^ v;
+        for (let i = 0; i < 5; i++) if ((b >> i) & 1) chk ^= GEN[i];
+      }
+      return chk;
+    }
+
+    function hrpExpandTest(hrp: string): number[] {
+      const ret: number[] = [];
+      for (let i = 0; i < hrp.length; i++) ret.push(hrp.charCodeAt(i) >> 5);
+      ret.push(0);
+      for (let i = 0; i < hrp.length; i++) ret.push(hrp.charCodeAt(i) & 31);
+      return ret;
+    }
+
+    function convertBitsTest(data: Uint8Array, fromBits: number, toBits: number): number[] {
+      let acc = 0, bits = 0;
+      const result: number[] = [];
+      const maxV = (1 << toBits) - 1;
+      for (const value of data) {
+        acc = (acc << fromBits) | value;
+        bits += fromBits;
+        while (bits >= toBits) { bits -= toBits; result.push((acc >> bits) & maxV); }
+      }
+      if (bits > 0) result.push((acc << (toBits - bits)) & maxV);
+      return result;
+    }
+
+    function bech32mEncodeTest(hrp: string, witnessVersion: number, program: Uint8Array): string {
+      const witnessData = [witnessVersion, ...convertBitsTest(program, 8, 5)];
+      const expanded = hrpExpandTest(hrp).concat(witnessData).concat([0, 0, 0, 0, 0, 0]);
+      const poly = polymodTest(expanded) ^ 0x2bc830a3;
+      const checksum = Array.from({ length: 6 }, (_, i) => (poly >> (5 * (5 - i))) & 31);
+      return hrp + "1" + [...witnessData, ...checksum].map(d => CHARSET[d]).join("");
+    }
+
+    // BIP-350 test vectors — https://github.com/bitcoin/bips/blob/master/bip-0350.mediawiki
+    const vectors: { programHex: string; witnessVersion: number; hrp: string; expected: string }[] = [
+      { hrp: "bc", witnessVersion: 1, programHex: "751e76e8199196d454941c45d1b3a323f1433bd6751e76e8199196d454941c45d1b3a323f1433bd6", expected: "bc1pw508d6qejxtdg4y5r3zarvary0c5xw7kw508d6qejxtdg4y5r3zarvary0c5xw7kt5nd6y" },
+      { hrp: "bc", witnessVersion: 1, programHex: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", expected: "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0" },
+      { hrp: "tb", witnessVersion: 1, programHex: "000000c4a5cad46221b2a187905e5266362b99d5e91c6ce24d165dab93e86433", expected: "tb1pqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesf3hn0c" },
+      { hrp: "bc", witnessVersion: 16, programHex: "751e", expected: "bc1sw50qgdz25j" },
+      { hrp: "bc", witnessVersion: 2, programHex: "751e76e8199196d454941c45d1b3a323", expected: "bc1zw508d6qejxtdg4y5r3zarvaryvaxxpcs" },
+    ];
+
+    let passed = 0;
+    for (const v of vectors) {
+      const program = new Uint8Array(Buffer.from(v.programHex, "hex"));
+      const result = bech32mEncodeTest(v.hrp, v.witnessVersion, program);
+      if (result.toLowerCase() === v.expected.toLowerCase()) passed++;
+    }
+
+    checks.push({
+      name: "Bech32m self-test",
+      ok: passed === vectors.length,
+      detail: `${passed}/${vectors.length} BIP-350 test vectors passed`,
+    });
+  } catch (e: unknown) {
+    checks.push({ name: "Bech32m self-test", ok: false, detail: e instanceof Error ? e.message : String(e) });
+  }
+
   const allOk = checks.every(c => c.ok);
   const noneOk = checks.every(c => !c.ok);
 
@@ -748,10 +817,10 @@ async function runDoctor(): Promise<void> {
     status: noneOk ? "error" : allOk ? "ok" : "degraded",
     checks,
     message: allOk
-      ? "All 7 data sources reachable. Arbiter ready — all 3 signals operational."
+      ? "All 8 checks passed (7 data sources + bech32m self-test). Arbiter ready."
       : noneOk
-        ? "All data sources unreachable. Check network connectivity."
-        : `Some sources degraded: ${checks.filter(c => !c.ok).map(c => c.name).join(", ")}`,
+        ? "All checks failed. Check network connectivity."
+        : `Some checks degraded: ${checks.filter(c => !c.ok).map(c => c.name).join(", ")}`,
   };
 
   console.log(JSON.stringify(result, null, 2));
