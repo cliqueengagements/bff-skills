@@ -33,6 +33,8 @@ const FALLBACK_FEE_UESTX       = 4000;      // fallback if fee API unavailable
 const SBTC_DEV_GREEN_PCT       = 0.5;       // price deviation < 0.5% = GREEN
 const SBTC_DEV_YELLOW_PCT      = 2.0;       // price deviation < 2% = YELLOW, else RED
 const HERMETICA_SWAP_COST_PCT  = 0.3;       // estimated swap cost USDCx -> sBTC
+const HERMETICA_LAUNCH_DATE    = new Date("2025-06-15"); // approx Stacks mainnet launch
+const HERMETICA_FALLBACK_APY   = 20.0;      // conservative mid-range estimate when rate ≈ 1.0
 const USDCX_CONTRACT           = "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx";
 
 // ── API endpoints (Bitflow-native — no external price oracles) ─────────────
@@ -341,12 +343,12 @@ async function fetchHermeticaRate(): Promise<number | null> {
     if (exchangeRate <= 1.001) {
       // Rate too close to 1.0 — use Hermetica's historical APY as estimate
       // Hermetica sUSDh historically yields ~15-25% APY
-      return 20.0; // conservative mid-range estimate
+      return HERMETICA_FALLBACK_APY;
     }
 
-    // Annualize from rate growth
-    // Hermetica launched ~mid 2025 on Stacks mainnet
-    const monthsSinceLaunch = 10;
+    // Annualize from rate growth — compute months dynamically from launch date
+    const msSinceLaunch = Date.now() - HERMETICA_LAUNCH_DATE.getTime();
+    const monthsSinceLaunch = Math.max(1, msSinceLaunch / (30.44 * 24 * 60 * 60 * 1000));
     const growthPct = (exchangeRate - 1.0) * 100;
     const apyPct = (growthPct / monthsSinceLaunch) * 12;
 
