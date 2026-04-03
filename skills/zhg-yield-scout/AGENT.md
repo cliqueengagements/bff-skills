@@ -1,5 +1,5 @@
 ---
-name: micro-basilisk
+name: zhg-yield-scout-agent
 skill: zhg-yield-scout
 description: "Reads wallet balances and positions across Zest, Granite, and HODLMM. Outputs yield comparison, best move recommendation, and sBTC break prices. Read-only — never submits transactions."
 ---
