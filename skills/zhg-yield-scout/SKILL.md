@@ -29,7 +29,7 @@ ZHG stands for the three largest sBTC yield protocols on Stacks:
 
 Together, ZHG represents **over $100M in TVL** — the three places serious sBTC yield lives on Stacks today.
 
-## What the skill does
+## What it does
 
 One command. Five sections. No DeFi knowledge required.
 
@@ -40,6 +40,10 @@ One command. Five sections. No DeFi knowledge required.
 5. **Break Prices** — The sBTC price where things go wrong. Where your HODLMM bins go out of range. Where Granite liquidates your collateral. A plain dollar number so you know when to pay attention.
 
 **No transactions. No gas. No risk. Read-only.**
+
+## Why agents need it
+
+Most agents deposit into one protocol and forget. They don't know if Granite is paying more than Zest this week. They don't know their HODLMM bins went out of range three days ago. They don't know what sBTC price liquidates them. This skill answers one question: "Where should my money be right now?"
 
 ## Who this is for
 
