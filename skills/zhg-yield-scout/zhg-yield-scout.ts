@@ -129,6 +129,7 @@ interface ScoutResult {
   best_move: BestMove;
   break_prices: BreakPrices;
   data_sources: string[];
+  rendered_report: string;
   error: { code: string; message: string } | null;
 }
 
@@ -943,6 +944,7 @@ async function runScout(wallet: string): Promise<ScoutResult> {
       best_move: { recommendation: "Invalid wallet address", idle_capital_usd: 0, opportunity_cost_daily_usd: 0 },
       break_prices: { hodlmm_range_exit_low_usd: null, hodlmm_range_exit_high_usd: null, granite_liquidation_usd: null, current_sbtc_price_usd: 0 },
       data_sources: [],
+      rendered_report: "",
       error: { code: "INVALID_WALLET", message: "Wallet must be a valid Stacks mainnet address (SP...)" },
     };
   }
@@ -978,7 +980,7 @@ async function runScout(wallet: string): Promise<ScoutResult> {
 
   const status = allSources.length >= 4 ? "ok" : "degraded";
 
-  return {
+  const result: ScoutResult = {
     status,
     wallet,
     what_you_have: balances,
@@ -991,8 +993,12 @@ async function runScout(wallet: string): Promise<ScoutResult> {
     best_move: bestMove,
     break_prices: breakPrices,
     data_sources: [...new Set(allSources)],
+    rendered_report: "",
     error: null,
   };
+
+  result.rendered_report = renderReport(result);
+  return result;
 }
 
 // ── Utility ────────────────────────────────────────────────────────────────────
