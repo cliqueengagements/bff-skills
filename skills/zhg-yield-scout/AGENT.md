@@ -20,7 +20,7 @@ description: "Reads wallet balances and positions across Zest, Granite, and HODL
 ## Guardrails
 
 1. **Read-only always.** This skill never submits transactions, never spends gas, never moves funds.
-2. **No mock data.** Every number comes from a live on-chain read or API call. If a source fails, report degraded status — never substitute fake values.
+2. **No mock data.** Every number comes from a live on-chain read or API call. If a source fails, report degraded status — never substitute fake values. Exception: Zest sBTC supply APY is reported as 0% when no live rate is available, with a note directing users to check zest.fi.
 3. **sBTC pricing, not BTC.** Break prices use on-chain sBTC price from Tenero, not BTC L1 price. sBTC can depeg from BTC during stress events — the break price must reflect what the protocol actually sees.
 4. **Graceful empty positions.** If the wallet has no position on a protocol, report "no position" and still show yield options. The skill is equally useful for someone with zero DeFi exposure.
 5. **BigInt for all Clarity values.** HODLMM bin balances and Granite params are uint128. Parse with BigInt from big-endian hex — never use JavaScript Number for on-chain values above 2^53.
@@ -29,7 +29,7 @@ description: "Reads wallet balances and positions across Zest, Granite, and HODL
 
 ## Autonomous actions allowed
 
-- Fetch public API data (Hiro, Tenero, Bitflow, Zest, Granite) — always allowed
+- Fetch public API data (Hiro, Tenero, Bitflow) — always allowed
 - Read on-chain contract state via `call_read_only_function` — always allowed
 - Compute derived values (APY, break prices, opportunity cost) — always allowed
 - Output JSON report to stdout — always allowed
@@ -67,7 +67,7 @@ Always return strict JSON:
           "in_range": true,
           "active_bin": 510,
           "user_bins": { "min": 460, "max": 680, "count": 221 },
-          "dlp_shares": 99661451,
+          "dlp_shares": "99661451",
           "estimated_value_usd": 110.50
         }
       ]
@@ -95,6 +95,7 @@ Always return strict JSON:
     "granite_liquidation_usd": null,
     "current_sbtc_price_usd": 67987
   },
+  "data_sources": ["hiro-balances", "tenero-sbtc-price", "tenero-stx-price", "zest-on-chain", "granite-on-chain", "hodlmm-pool-1", "granite-apy", "bitflow-hodlmm-apr", "zest-apy", "hodlmm-bin-price-low", "hodlmm-bin-price-high"],
   "error": null
 }
 ```

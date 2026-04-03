@@ -223,9 +223,9 @@ function findTypePrefix(hex: string, typebyte: string): number {
     // ok(some(value)): 07 + 0a (some) + type + value
     if (hex.substring(2, 4) === "0a" && hex.substring(4, 6) === typebyte) return 4;
   }
-  // Fallback: find type byte
-  const pos = hex.indexOf(typebyte);
-  return pos >= 0 ? pos : -1;
+  // Direct type byte at start (unwrapped response)
+  if (hex.substring(0, 2) === typebyte) return 0;
+  return -1;
 }
 
 // ── Full Clarity value parser (big-endian) ─────────────────────────────────────
@@ -587,6 +587,15 @@ async function getHodlmmPositions(wallet: string): Promise<{ positions: HodlmmPo
   const sources: string[] = [];
   const userPools: HodlmmUserPool[] = [];
 
+  // Fetch Bitflow pool data once for all pools
+  let bitflowPools: BitflowPoolData[] | null = null;
+  try {
+    const poolData = await fetchJson<BitflowPoolsResponse>(`${BITFLOW_API}/api/app/v1/pools`);
+    bitflowPools = poolData.data ?? null;
+  } catch {
+    // Bitflow API unavailable — position values will be null
+  }
+
   for (const pool of HODLMM_POOLS) {
     try {
       // Get user's bins in this pool
@@ -625,16 +634,10 @@ async function getHodlmmPositions(wallet: string): Promise<{ positions: HodlmmPo
 
       // Estimate position USD value from pool TVL and share ratio
       let estimatedValueUsd: number | null = null;
-      try {
-        const poolData = await fetchJson<BitflowPoolsResponse>(`${BITFLOW_API}/api/app/v1/pools`);
-        const matchPool = poolData.data?.find(p => p.poolId === `dlmm_${pool.id}`);
-        if (matchPool && totalSupply > 0n) {
-          // User's share of TVL = (dlpShares / totalSupply) * tvlUsd
-          const shareRatio = Number(dlpShares) / Number(totalSupply);
-          estimatedValueUsd = round(shareRatio * matchPool.tvlUsd, 2);
-        }
-      } catch {
-        // TVL lookup failed
+      const matchPool = bitflowPools?.find(p => p.poolId === `dlmm_${pool.id}`);
+      if (matchPool && totalSupply > 0n) {
+        const shareRatio = Number(dlpShares) / Number(totalSupply);
+        estimatedValueUsd = round(shareRatio * matchPool.tvlUsd, 2);
       }
 
       sources.push(`hodlmm-pool-${pool.id}`);
@@ -685,7 +688,7 @@ function parseUserBinList(hex: string): number[] {
     pos += 2;
     const valHex = clean.substring(pos, pos + 32);
     const val = Number(BigInt("0x" + valHex));
-    if (val > 0) bins.push(val);
+    bins.push(val);
     pos += 32;
   }
 

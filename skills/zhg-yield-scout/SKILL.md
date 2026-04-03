@@ -5,7 +5,7 @@ metadata:
   author: "cliqueengagements"
   author-agent: "Micro Basilisk (Agent 77) — SP219TWC8G12CSX5AB093127NC82KYQWEH8ADD1AY | bc1qzh2z92dlvccxq5w756qppzz8fymhgrt2dv8cf5"
   user-invocable: "false"
-  arguments: "doctor | run --wallet <STX_ADDRESS>"
+  arguments: "doctor | install-packs | run --wallet <STX_ADDRESS> [--format json|text]"
   entry: "zhg-yield-scout/zhg-yield-scout.ts"
   requires: ""
   tags: "defi, read-only, mainnet-only, l2"
@@ -57,7 +57,7 @@ Most agents deposit into one protocol and forget. They don't know if Granite is 
 
 ### doctor
 
-Checks all data sources: Hiro Stacks API, Zest MCP endpoints, Granite on-chain contracts, HODLMM pool contracts, and Tenero price oracle.
+Checks all data sources: Hiro Stacks API, Granite on-chain contracts, HODLMM pool contracts, Bitflow App API, DLMM Core bin-price function, and Tenero price oracle.
 
 ```bash
 bun run zhg-yield-scout/zhg-yield-scout.ts doctor
@@ -85,7 +85,7 @@ bun run zhg-yield-scout/zhg-yield-scout.ts run --wallet SP219TWC8G12CSX5AB093127
 |---|---|---|
 | Hiro Stacks API | STX balance, contract read-only calls | `api.mainnet.hiro.so` |
 | Tenero API | sBTC/STX/USDCx USD prices, wallet holdings | `api.tenero.io` |
-| Zest Protocol | Supply position, asset list, APY | MCP `zest_get_position`, `zest_list_assets` |
+| Zest Protocol | Supply position (sBTC pool balance) | On-chain read via `call_read_only_function` (Hiro fallback: token balance check) |
 | Granite Protocol | Supply/borrow params, interest rate, user position, collateral config | On-chain reads via `call_read_only_function` |
 | HODLMM Pool Contracts | User bins, bin balances, active bin, pool state | Direct pool contract reads (8 pools) |
 | Bitflow App API | HODLMM pool APR, TVL, volume | `bff.bitflowapis.finance` |
@@ -96,11 +96,12 @@ All outputs are strict JSON to stdout.
 
 | Field | Type | Description |
 |---|---|---|
-| `status` | `"ok" \| "error"` | Overall result |
+| `status` | `"ok" \| "degraded" \| "error"` | Overall result (`degraded` if <4 sources respond) |
 | `wallet` | `string` | Queried wallet address |
 | `what_you_have` | `object` | Token balances in USD |
 | `zhg_positions` | `object` | Active positions across Zest, Granite, HODLMM |
 | `smart_options` | `array` | Yield comparison table sorted by APY |
 | `best_move` | `object` | Single recommendation with opportunity cost |
 | `break_prices` | `object` | sBTC prices that trigger range exit or liquidation |
-| `error` | `object \| null` | Error details if status is "error" |
+| `data_sources` | `string[]` | List of data sources that responded successfully |
+| `error` | `{ code, message } \| null` | Error details if status is "error" |
