@@ -34,7 +34,7 @@ Together, ZBG represents **over $100M in TVL** — the three places serious sBTC
 One command. Five sections. No DeFi knowledge required.
 
 1. **What You Have** — Your sBTC, STX, and USDCx balances shown in dollars. No raw decimals, no hex — just what you own.
-2. **Available ZBG Positions** — Checks all three protocols for any active deposits. Scans all 8 HODLMM pools. If you have nothing deployed, it tells you straight: "idle — earning nothing."
+2. **Any Active Position** — Checks all three protocols for any active deposits. Scans all 8 HODLMM pools. If you have nothing deployed, it tells you straight: "idle — earning nothing."
 3. **ZBG Smart Options** — Side-by-side yield comparison. APY, what you'd earn daily and monthly, gas cost to enter. Sorted best to worst. You don't need to understand interest rate models — just read the table.
 4. **Best Safe Move** — One recommendation. Not five options to research — one clear next step based on your holdings and current rates. Shows exactly how much you're leaving on the table by doing nothing.
 5. **Break Prices** — The sBTC price where things go wrong. Where your HODLMM bins go out of range. Where Granite liquidates your collateral. A plain dollar number so you know when to pay attention.
