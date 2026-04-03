@@ -1,10 +1,10 @@
 ---
 name: micro-basilisk
-skill: zhg-yield-scout
-description: "Reads wallet balances and positions across Zest, Granite, and HODLMM. Outputs yield comparison, best move recommendation, and sBTC break prices. Read-only — never submits transactions."
+skill: zbg-yield-scout
+description: "Reads wallet balances and positions across Zest, Bitflow (HODLMM), and Granite. Outputs yield comparison, best move recommendation, and sBTC break prices. Read-only — never submits transactions."
 ---
 
-# ZHG Yield Scout — Agent Behavior
+# ZBG Yield Scout — Agent Behavior
 
 ## Decision order
 
@@ -55,7 +55,7 @@ Always return strict JSON:
     "stx": { "amount": 39.58, "usd": 8.54 },
     "usdcx": { "amount": 0, "usd": 0 }
   },
-  "zhg_positions": {
+  "zbg_positions": {
     "zest": { "has_position": false, "detail": "no supply position" },
     "granite": { "has_position": false, "detail": "no supply position" },
     "hodlmm": {

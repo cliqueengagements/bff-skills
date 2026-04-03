@@ -1,14 +1,14 @@
 #!/usr/bin/env bun
 /**
- * ZHG Yield Scout
+ * ZBG Yield Scout
  * Scans Zest, Granite, and all 8 HODLMM pools for sBTC/STX/USDCx positions.
  * Compares yield, recommends the best safe move, shows sBTC break prices.
  *
  * Read-only — no transactions, no gas, no risk.
  *
  * Usage:
- *   bun run zhg-yield-scout/zhg-yield-scout.ts doctor
- *   bun run zhg-yield-scout/zhg-yield-scout.ts run --wallet <STX_ADDRESS>
+ *   bun run zbg-yield-scout/zbg-yield-scout.ts doctor
+ *   bun run zbg-yield-scout/zbg-yield-scout.ts run --wallet <STX_ADDRESS>
  */
 
 import { Command } from "commander";
@@ -120,7 +120,7 @@ interface ScoutResult {
   status: "ok" | "degraded" | "error";
   wallet: string;
   what_you_have: WalletBalances;
-  zhg_positions: {
+  zbg_positions: {
     zest: ZestPosition;
     granite: GranitePosition;
     hodlmm: HodlmmPositions;
@@ -182,7 +182,7 @@ async function fetchJson<T>(url: string): Promise<T> {
   try {
     const res = await fetch(url, {
       signal: controller.signal,
-      headers: { Accept: "application/json", "User-Agent": "bff-skills/zhg-yield-scout" },
+      headers: { Accept: "application/json", "User-Agent": "bff-skills/zbg-yield-scout" },
     });
     if (!res.ok) throw new Error(`HTTP ${res.status} from ${url}`);
     return res.json() as Promise<T>;
@@ -351,7 +351,7 @@ async function callReadOnly(
     const res = await fetch(url, {
       method: "POST",
       signal: controller.signal,
-      headers: { "Content-Type": "application/json", "User-Agent": "bff-skills/zhg-yield-scout" },
+      headers: { "Content-Type": "application/json", "User-Agent": "bff-skills/zbg-yield-scout" },
       body: JSON.stringify({ sender, arguments: args }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -453,7 +453,7 @@ async function getWalletBalances(wallet: string): Promise<{ balances: WalletBala
   };
 }
 
-// ── Section 2: ZHG Positions ───────────────────────────────────────────────────
+// ── Section 2: ZBG Positions ───────────────────────────────────────────────────
 async function getZestPosition(wallet: string): Promise<{ position: ZestPosition; sources: string[] }> {
   const sources: string[] = [];
   try {
@@ -935,7 +935,7 @@ async function runScout(wallet: string): Promise<ScoutResult> {
       status: "error",
       wallet,
       what_you_have: { sbtc: { amount: 0, usd: 0 }, stx: { amount: 0, usd: 0 }, usdcx: { amount: 0, usd: 0 } },
-      zhg_positions: {
+      zbg_positions: {
         zest: { has_position: false, detail: "Skipped — invalid wallet" },
         granite: { has_position: false, detail: "Skipped — invalid wallet" },
         hodlmm: { has_position: false, pools: [] },
@@ -955,7 +955,7 @@ async function runScout(wallet: string): Promise<ScoutResult> {
   const { balances, prices, sources: balSources } = await getWalletBalances(wallet);
   allSources.push(...balSources);
 
-  // Section 2: ZHG Positions (run in parallel)
+  // Section 2: ZBG Positions (run in parallel)
   const [zestResult, graniteResult, hodlmmResult] = await Promise.all([
     getZestPosition(wallet),
     getGranitePosition(wallet),
@@ -984,7 +984,7 @@ async function runScout(wallet: string): Promise<ScoutResult> {
     status,
     wallet,
     what_you_have: balances,
-    zhg_positions: {
+    zbg_positions: {
       zest: zestResult.position,
       granite: graniteResult.position,
       hodlmm: hodlmmResult.positions,
@@ -1012,7 +1012,7 @@ function renderReport(r: ScoutResult): string {
   const lines: string[] = [];
 
   lines.push("");
-  lines.push("ZHG Yield Scout");
+  lines.push("ZBG Yield Scout");
   lines.push(`Wallet: ${r.wallet}`);
   lines.push("");
 
@@ -1028,22 +1028,22 @@ function renderReport(r: ScoutResult): string {
   lines.push(`| **Wallet Total** |              | **$${walletUsd}** |`);
   lines.push("");
 
-  // Section 2: ZHG Positions (what's deployed)
-  lines.push("## 2. Available ZHG Positions (deployed capital)");
+  // Section 2: ZBG Positions (what's deployed)
+  lines.push("## 2. Available ZBG Positions (deployed capital)");
   lines.push("");
   lines.push("| Protocol | Status     | Detail | Value |");
   lines.push("|----------|------------|--------|------:|");
 
-  const z = r.zhg_positions.zest;
+  const z = r.zbg_positions.zest;
   lines.push(`| Zest     | ${z.has_position ? "**ACTIVE**" : "No position"} | ${z.detail} | — |`);
 
-  const g = r.zhg_positions.granite;
+  const g = r.zbg_positions.granite;
   const gDetail = g.has_position
     ? g.detail
     : `${g.detail} (supply APY: ${g.supply_apy_pct}%, util: ${g.utilization_pct}%)`;
   lines.push(`| Granite  | ${g.has_position ? "**ACTIVE**" : "No position"} | ${gDetail} | — |`);
 
-  const h = r.zhg_positions.hodlmm;
+  const h = r.zbg_positions.hodlmm;
   let deployedUsd = 0;
   if (h.has_position) {
     for (const p of h.pools) {
@@ -1067,7 +1067,7 @@ function renderReport(r: ScoutResult): string {
   lines.push("");
 
   // Section 3: Smart Options
-  lines.push("## 3. ZHG Smart Options (sorted by APY)");
+  lines.push("## 3. ZBG Smart Options (sorted by APY)");
   lines.push("");
   lines.push("| # | Protocol | Pool | APY | Daily | Monthly | Gas | Note |");
   lines.push("|---|----------|------|----:|------:|--------:|-----|------|");
@@ -1131,7 +1131,7 @@ function pad(s: string, len: number): string {
 const program = new Command();
 
 program
-  .name("zhg-yield-scout")
+  .name("zbg-yield-scout")
   .description("Scan Zest, Granite, and HODLMM for yield positions and recommendations")
   .version("1.0.0");
 
@@ -1222,14 +1222,14 @@ program
   .action(() => {
     console.log(JSON.stringify({
       status: "ok",
-      message: "No packs required. zhg-yield-scout uses Hiro, Tenero, and Bitflow public APIs only.",
+      message: "No packs required. zbg-yield-scout uses Hiro, Tenero, and Bitflow public APIs only.",
       data: { requires: [] },
     }, null, 2));
   });
 
 program
   .command("run")
-  .description("Scan wallet across ZHG protocols and output yield report")
+  .description("Scan wallet across ZBG protocols and output yield report")
   .requiredOption("--wallet <address>", "Stacks wallet address (SP...) to scan")
   .option("--format <type>", "Output format: json (default) or text", "json")
   .action(async (options: { wallet: string; format: string }) => {
