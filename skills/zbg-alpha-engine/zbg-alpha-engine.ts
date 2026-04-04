@@ -141,9 +141,12 @@ interface ScoutResult {
 }
 
 // Engine output
+const DISCLAIMER = "Data-driven yield analysis for informational purposes only. Not financial advice. Past yields do not guarantee future returns. Smart contract risk, impermanent loss, and peg failure are real possibilities. Verify on-chain data independently before acting.";
+
 interface EngineResult {
   status: "ok" | "refused" | "partial" | "error";
   command: string;
+  disclaimer: string;
   scout?: ScoutResult;
   reserve?: ReserveResult;
   guardian?: GuardianResult;
@@ -967,7 +970,15 @@ function buildEmergencyInstructions(scout: ScoutResult): ExecuteInstruction[] {
 // ██  SAFETY PIPELINE
 // ══════════════════════════════════════════════════════════════════════════════
 
+function withDisclaimer(result: Omit<EngineResult, "disclaimer">): EngineResult {
+  return { ...result, disclaimer: DISCLAIMER };
+}
+
 async function runPipeline(wallet: string, command: string, opts: Record<string, string>): Promise<EngineResult> {
+  return withDisclaimer(await _runPipeline(wallet, command, opts));
+}
+
+async function _runPipeline(wallet: string, command: string, opts: Record<string, string>): Promise<Omit<EngineResult, "disclaimer">> {
   // Step 1: Scout
   let scout: ScoutResult;
   try {
@@ -1358,7 +1369,7 @@ program
       if (opts.format === "text") {
         console.log(renderReport(scout, reserve, guardian));
       } else {
-        console.log(JSON.stringify({ status: "ok", command: "scan", scout, reserve, guardian, rendered_report: renderReport(scout, reserve, guardian) }, null, 2));
+        console.log(JSON.stringify({ status: "ok", command: "scan", disclaimer: DISCLAIMER, scout, reserve, guardian, rendered_report: renderReport(scout, reserve, guardian) }, null, 2));
       }
     } catch (err: unknown) {
       console.error(JSON.stringify({ status: "error", command: "scan", error: err instanceof Error ? err.message : String(err) }));

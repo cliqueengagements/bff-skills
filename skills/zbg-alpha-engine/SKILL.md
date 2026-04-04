@@ -182,3 +182,24 @@ The sBTC Proof-of-Reserve module derives the signer's Bitcoin P2TR address from 
 10. HODLMM Pool Contracts
 
 If crypto self-tests (1-2) fail, engine refuses all operations.
+
+## x402 Paid Endpoints
+
+ZBG Alpha Engine is free to run directly from the registry. For agents that want instant results without running their own node or waiting for 11 API calls, paid x402 endpoints are available:
+
+| Endpoint | What you get | Price | Pays back in |
+|----------|-------------|-------|-------------|
+| `/scan` | Full 7-section report: wallet, positions, yields, PoR, break prices, safety gates | 500 sats | ~5 min of yield difference |
+| `/reserve` | sBTC Proof-of-Reserve check: GREEN/YELLOW/RED signal with reserve ratio | 100 sats | Avoiding one bad trade |
+| `/break-prices` | HODLMM range exit prices + safety buffer | 200 sats | One rebalance save |
+| `/guardian` | 6-gate pre-flight safety check | 100 sats | One blocked bad tx |
+
+All endpoints return the same JSON output as the CLI. x402 protocol shows price before payment — no surprises.
+
+## Disclaimers
+
+### Financial Disclaimer
+ZBG Alpha Engine provides data-driven yield analysis for informational purposes only. This is not financial advice. Users are solely responsible for their own investment decisions. Past yields do not guarantee future returns. Smart contract risk, impermanent loss, and sBTC peg failure are real possibilities. Always verify on-chain data independently before acting.
+
+### Accuracy Disclaimer
+Data is live but not guaranteed. Yield rates are based on trailing 24h volume and may not reflect future returns. Position values use Bitflow-reported TVL which may lag real-time. PoR checks confirmed UTXO balances only — pending transactions are not reflected. Signer key rotation may cause temporary false readings. The engine reads 11 data sources; if any are unavailable, output may be incomplete (status: "degraded").
