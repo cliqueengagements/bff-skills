@@ -106,9 +106,18 @@ If sBTC signer aggregate pubkey rotates and BTC has not fully migrated to the ne
 ## Dependencies
 
 - `commander` (CLI parsing, registry convention)
-- `tiny-secp256k1` (BIP-341 EC point addition for P2TR derivation)
-- Node.js `crypto` (SHA-256 for tagged hashes)
+- `tiny-secp256k1` (BIP-341 elliptic curve point addition — see note below)
+- Node.js built-ins: `crypto` (SHA-256), `os`/`path`/`fs` (cooldown state) — same pattern as Day 3 winner hodlmm-bin-guardian
 - All bech32m encoding is hand-rolled (no external bech32 library)
+
+### Why `tiny-secp256k1`?
+
+The sBTC Proof-of-Reserve module derives the signer's Bitcoin P2TR address from the aggregate pubkey registered on Stacks. This requires a BIP-341 Taproot key tweak: `output_key = internal_key + H_TapTweak(internal_key) * G`. The tweak operation is elliptic curve point addition on secp256k1 — Node.js/Bun `crypto` module supports ECDSA signing and ECDH key agreement but does **not** expose raw EC point addition. This single operation cannot be implemented without either:
+
+1. An EC library (`tiny-secp256k1`, `@noble/secp256k1`), or
+2. Hand-rolling secp256k1 field arithmetic (~400 lines, security anti-pattern for production crypto)
+
+`tiny-secp256k1` is the same library used by `bitcoinjs-lib`, `@scure/btc-signer`, and the Bitcoin ecosystem at large. It provides exactly one function we need: `xOnlyPointAddTweak()`. The alternative `@noble/secp256k1` (pure JS, no native bindings) is a drop-in replacement if preferred.
 
 ## Doctor Self-Tests (10 checks)
 
