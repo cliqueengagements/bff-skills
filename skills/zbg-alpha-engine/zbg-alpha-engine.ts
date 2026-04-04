@@ -1193,6 +1193,143 @@ async function runDoctor(): Promise<void> {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// ██  RENDERED REPORT (human-readable for beginners)
+// ══════════════════════════════════════════════════════════════════════════════
+
+function pad(s: string, len: number): string {
+  return s.length >= len ? s : s + " ".repeat(len - s.length);
+}
+
+function renderReport(scout: ScoutResult, reserve: ReserveResult, guardian: GuardianResult): string {
+  const L: string[] = [];
+
+  L.push("");
+  L.push("ZBG Alpha Engine — Full Report");
+  L.push(`Wallet: ${scout.wallet}`);
+  L.push("");
+
+  // Section 1: What You Have
+  const walletUsd = round(scout.balances.sbtc.usd + scout.balances.stx.usd + scout.balances.usdcx.usd, 2);
+  L.push("## 1. What You Have (available in wallet)");
+  L.push("");
+  L.push("| Token   | Amount             | USD      |");
+  L.push("|---------|--------------------|---------:|");
+  L.push(`| sBTC    | ${pad(String(scout.balances.sbtc.amount), 18)} | $${scout.balances.sbtc.usd} |`);
+  L.push(`| STX     | ${pad(String(scout.balances.stx.amount), 18)} | $${scout.balances.stx.usd} |`);
+  L.push(`| USDCx   | ${pad(String(scout.balances.usdcx.amount), 18)} | $${scout.balances.usdcx.usd} |`);
+  L.push(`| **Wallet Total** |              | **$${walletUsd}** |`);
+  L.push("");
+
+  // Section 2: Positions
+  L.push("## 2. ZBG Positions (deployed capital)");
+  L.push("");
+  L.push("| Protocol | Status     | Detail | Value |");
+  L.push("|----------|------------|--------|------:|");
+
+  const z = scout.positions.zest;
+  const zDetail = z.has_position ? z.detail : `${z.detail} (APY: ${z.supply_apy_pct ?? 0}%, util: ${z.utilization_pct ?? 0}%)`;
+  L.push(`| Zest     | ${z.has_position ? "**ACTIVE**" : "No position"} | ${zDetail} | — |`);
+
+  const g = scout.positions.granite;
+  const gDetail = g.has_position ? g.detail : `${g.detail} (APY: ${g.supply_apy_pct}%, util: ${g.utilization_pct}%)`;
+  L.push(`| Granite  | ${g.has_position ? "**ACTIVE**" : "No position"} | ${gDetail} | — |`);
+
+  const h = scout.positions.hodlmm;
+  let deployedUsd = 0;
+  if (h.has_position) {
+    for (const p of h.pools) {
+      const rangeTag = p.in_range ? "**IN RANGE**" : "**OUT OF RANGE**";
+      const binStr = p.user_bins ? `${p.user_bins.count} bins (${p.user_bins.min}–${p.user_bins.max})` : "no bins";
+      const valueStr = p.estimated_value_usd !== null ? `$${p.estimated_value_usd}` : "—";
+      if (p.estimated_value_usd) deployedUsd += p.estimated_value_usd;
+      L.push(`| HODLMM   | **ACTIVE** | ${p.name} — ${rangeTag} at bin ${p.active_bin}, ${binStr} | ${valueStr} |`);
+    }
+  } else {
+    L.push("| HODLMM   | No position | No positions across 8 pools | — |");
+  }
+  if (deployedUsd > 0) L.push(`| **Deployed Total** | | | **$${round(deployedUsd, 2)}** |`);
+
+  const grandTotal = round(walletUsd + deployedUsd, 2);
+  L.push("");
+  L.push(`**Total portfolio: $${grandTotal}** (wallet: $${walletUsd} + deployed: $${round(deployedUsd, 2)})`);
+  L.push("");
+
+  // Section 3: sBTC Reserve Status
+  L.push("## 3. sBTC Reserve Status (Proof of Reserve)");
+  L.push("");
+  L.push(`| Check | Value |`);
+  L.push(`|-------|------:|`);
+  L.push(`| Signal | **${reserve.signal}** |`);
+  L.push(`| Reserve ratio | ${reserve.reserve_ratio ?? "N/A"} |`);
+  L.push(`| BTC in vault | ${reserve.btc_reserve} BTC |`);
+  L.push(`| sBTC circulating | ${reserve.sbtc_circulating} sBTC |`);
+  L.push(`| Signer address | \`${reserve.signer_address.slice(0, 20)}...\` |`);
+  L.push(`| Verdict | ${reserve.recommendation} |`);
+  L.push("");
+
+  // Section 4: Smart Options
+  L.push("## 4. Yield Options (sorted by APY)");
+  L.push("");
+  L.push("| # | Protocol | Pool | APY | Daily | Monthly | Gas | Note |");
+  L.push("|---|----------|------|----:|------:|--------:|-----|------|");
+  scout.options.forEach((o, i) => {
+    L.push(`| ${i + 1} | ${o.protocol} | ${o.pool} | ${o.apy_pct}% | $${o.daily_usd} | $${o.monthly_usd} | ${o.gas_to_enter_stx} STX | ${o.note} |`);
+  });
+  L.push("");
+
+  // Section 5: Best Move
+  L.push("## 5. Best Safe Move");
+  L.push("");
+  L.push(`> ${scout.best_move.recommendation}`);
+  L.push("");
+  L.push(`| Metric | Value |`);
+  L.push(`|--------|------:|`);
+  L.push(`| Idle in wallet | $${scout.best_move.idle_capital_usd} |`);
+  L.push(`| Opportunity cost | $${scout.best_move.opportunity_cost_daily_usd}/day |`);
+  L.push("");
+
+  // Section 6: Break Prices
+  L.push("## 6. Break Prices");
+  L.push("");
+  const bp = scout.break_prices;
+  L.push("| Trigger | sBTC Price |");
+  L.push("|---------|----------:|");
+  if (bp.hodlmm_range_exit_low_usd) L.push(`| HODLMM range exit (low) | **$${bp.hodlmm_range_exit_low_usd.toLocaleString()}** |`);
+  L.push(`| Current sBTC price | $${bp.current_sbtc_price_usd.toLocaleString()} |`);
+  if (bp.hodlmm_range_exit_high_usd) L.push(`| HODLMM range exit (high) | **$${bp.hodlmm_range_exit_high_usd.toLocaleString()}** |`);
+  L.push(`| Granite liquidation | ${bp.granite_liquidation_usd ? `**$${bp.granite_liquidation_usd.toLocaleString()}**` : "N/A (no position)"} |`);
+  L.push("");
+
+  if (bp.hodlmm_range_exit_low_usd && bp.hodlmm_range_exit_high_usd) {
+    const bufLow = round(bp.current_sbtc_price_usd - bp.hodlmm_range_exit_low_usd, 0);
+    const bufHigh = round(bp.hodlmm_range_exit_high_usd - bp.current_sbtc_price_usd, 0);
+    L.push(`Your position is safe — $${bufLow.toLocaleString()} above low exit, $${bufHigh.toLocaleString()} below high exit.`);
+    L.push("");
+  }
+
+  // Section 7: Guardian Status
+  L.push("## 7. Safety Gates");
+  L.push("");
+  L.push(`| Gate | Status | Detail |`);
+  L.push(`|------|--------|--------|`);
+  L.push(`| PoR Reserve | ${reserve.signal === "GREEN" ? "PASS" : "**FAIL**"} | ${reserve.signal} |`);
+  L.push(`| Slippage | ${guardian.slippage.ok ? "PASS" : "**FAIL**"} | ${guardian.slippage.pct}% (max ${MAX_SLIPPAGE_PCT}%) |`);
+  L.push(`| 24h Volume | ${guardian.volume.ok ? "PASS" : "**FAIL**"} | $${Math.round(guardian.volume.usd).toLocaleString()} (min $${MIN_24H_VOLUME_USD.toLocaleString()}) |`);
+  L.push(`| Gas | ${guardian.gas.ok ? "PASS" : "**FAIL**"} | ${guardian.gas.estimated_stx} STX (max ${MAX_GAS_STX}) |`);
+  L.push(`| Cooldown | ${guardian.cooldown.ok ? "PASS" : "**FAIL**"} | ${guardian.cooldown.remaining_hours > 0 ? `${guardian.cooldown.remaining_hours}h remaining` : "Ready"} |`);
+  L.push(`| Prices | ${guardian.prices.ok ? "PASS" : "**FAIL**"} | ${guardian.prices.detail} |`);
+  L.push(`| **Can execute writes?** | **${guardian.can_proceed ? "YES" : "NO"}** | ${guardian.refusals.length > 0 ? guardian.refusals.join("; ") : "All gates pass"} |`);
+  L.push("");
+
+  // Footer
+  L.push("---");
+  L.push(`Data sources: ${scout.data_sources.length} live reads | Status: ${scout.status} | Engine: zbg-alpha-engine v1.0.0`);
+  L.push("");
+
+  return L.join("\n");
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // ██  CLI
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -1212,12 +1349,17 @@ program
   .command("scan")
   .description("Full read-only scan: wallet, positions, yields, break prices, PoR status, guardian gates")
   .requiredOption("--wallet <address>", "Stacks wallet address (SP...)")
-  .action(async (opts: { wallet: string }) => {
+  .option("--format <type>", "Output format: json (default) or text", "json")
+  .action(async (opts: { wallet: string; format: string }) => {
     try {
       const scout = await scoutWallet(opts.wallet);
       const reserve = await checkReserve();
       const guardian = await checkGuardian(scout);
-      console.log(JSON.stringify({ status: "ok", command: "scan", scout, reserve, guardian }, null, 2));
+      if (opts.format === "text") {
+        console.log(renderReport(scout, reserve, guardian));
+      } else {
+        console.log(JSON.stringify({ status: "ok", command: "scan", scout, reserve, guardian, rendered_report: renderReport(scout, reserve, guardian) }, null, 2));
+      }
     } catch (err: unknown) {
       console.error(JSON.stringify({ status: "error", command: "scan", error: err instanceof Error ? err.message : String(err) }));
       process.exit(1);
