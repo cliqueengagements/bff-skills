@@ -15,11 +15,19 @@ metadata:
 
 ## What it does
 
-Cross-protocol yield executor that reads AND writes across Zest v2, Granite, and HODLMM (Bitflow DLMM). Scans wallet positions and yield rates across all three protocols, verifies sBTC reserve integrity via BIP-341 P2TR derivation, checks market safety gates (slippage, volume, gas, cooldown), then executes deploy/withdraw/rebalance/migrate/emergency operations. Every write runs a mandatory 6-gate safety pipeline: Scout -> Reserve -> Guardian -> Executor. No bypasses.
+Cross-protocol yield executor for **sBTC, STX, and USDCx** across Zest v2, Granite, and HODLMM (Bitflow DLMM). Scans wallet balances and positions across all three protocols, compares yield options for each asset, verifies sBTC reserve integrity via BIP-341 P2TR derivation, checks market safety gates (slippage, volume, gas, cooldown), then executes deploy/withdraw/rebalance/migrate/emergency operations. Every write runs a mandatory 6-gate safety pipeline: Scout -> Reserve -> Guardian -> Executor. No bypasses.
+
+**Asset coverage:**
+
+| Asset | Scan | Deploy targets | Pools |
+|-------|------|---------------|-------|
+| sBTC | Wallet + Zest + Granite + HODLMM | Zest v2, Granite lending, HODLMM (sBTC-USDCx, STX-sBTC) | 3 protocols |
+| STX | Wallet + HODLMM | HODLMM (STX-USDCx 10/4/1bps, STX-sBTC 15bps) | 4 pools |
+| USDCx | Wallet + HODLMM | HODLMM one-sided below active bin (all USDCx-paired pools) | 5 pools |
 
 ## Why agents need it
 
-Agents holding sBTC currently have to manually check each protocol, compare yields, verify the sBTC peg is safe, and execute transactions one at a time. ZBG Alpha Engine does all of this in a single pipeline — scan 3 protocols in parallel, verify reserves are cryptographically sound, check 6 market safety gates, then move capital to the highest-yielding opportunity. It also handles emergencies: if the sBTC peg breaks, one `emergency` command withdraws everything across all protocols. No other skill combines cross-protocol reads, writes, AND cryptographic reserve verification.
+Agents holding sBTC, STX, or USDCx currently have to manually check each protocol, compare yields across different assets, verify the sBTC peg is safe, and execute transactions one at a time. ZBG Alpha Engine does all of this in a single pipeline — scan 3 protocols in parallel for all three assets, verify reserves are cryptographically sound, check 6 market safety gates, then move capital to the highest-yielding opportunity. It also handles emergencies: if the sBTC peg breaks, one `emergency` command withdraws everything across all protocols. No other skill combines cross-protocol reads, writes, AND cryptographic reserve verification.
 
 ## Safety notes
 
