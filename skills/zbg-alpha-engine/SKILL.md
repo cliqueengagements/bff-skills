@@ -13,9 +13,50 @@ metadata:
 
 # ZBG Alpha Engine
 
-Cross-protocol yield executor that reads AND writes across Zest, Granite, and HODLMM (Bitflow DLMM). Combines three proven modules — yield scanner, sBTC Proof-of-Reserve oracle, and HODLMM safety guardian — with a new execution layer.
+## What it does
 
-Every write operation runs a mandatory safety pipeline: **Scout** (read positions) -> **Reserve** (verify sBTC peg) -> **Guardian** (check market conditions) -> **Executor** (fire transaction). No bypasses.
+Cross-protocol yield executor that reads AND writes across Zest v2, Granite, and HODLMM (Bitflow DLMM). Scans wallet positions and yield rates across all three protocols, verifies sBTC reserve integrity via BIP-341 P2TR derivation, checks market safety gates (slippage, volume, gas, cooldown), then executes deploy/withdraw/rebalance/migrate/emergency operations. Every write runs a mandatory 6-gate safety pipeline: Scout -> Reserve -> Guardian -> Executor. No bypasses.
+
+## Why agents need it
+
+Agents holding sBTC currently have to manually check each protocol, compare yields, verify the sBTC peg is safe, and execute transactions one at a time. ZBG Alpha Engine does all of this in a single pipeline — scan 3 protocols in parallel, verify reserves are cryptographically sound, check 6 market safety gates, then move capital to the highest-yielding opportunity. It also handles emergencies: if the sBTC peg breaks, one `emergency` command withdraws everything across all protocols. No other skill combines cross-protocol reads, writes, AND cryptographic reserve verification.
+
+## Safety notes
+
+- Every write command runs the full safety pipeline: Scout (read state) -> PoR (verify sBTC backing) -> Guardian (6 gates) -> Executor. No gate can be skipped or bypassed.
+- PoR RED or DATA_UNAVAILABLE blocks ALL writes and suggests emergency withdrawal.
+- PoR YELLOW blocks all writes (read-only mode).
+- Guardian gates: slippage <=0.5%, 24h volume >=$10K, gas <=50 STX, 4h rebalance cooldown, price source availability.
+- Crypto self-test failure (bech32m vectors or P2TR derivation) blocks ALL operations including reads.
+- Post-conditions on all `call_contract` writes prevent unexpected token transfers.
+- Deploy refuses to send more than wallet balance. Refuses 0% APY protocols unless explicitly forced.
+- Emergency command bypasses Guardian (speed matters) but NEVER bypasses PoR.
+- Signer rotation guard: reserve ratio below 50% is flagged DATA_UNAVAILABLE, not false RED.
+- Engine outputs transaction instructions — does not hold keys or sign directly. Agent runtime executes via MCP.
+- Granite collateral removal blocked by trait_reference. Workaround: `repay` drops LTV to 0.
+
+## Output contract
+
+All commands output JSON to stdout:
+
+```json
+{
+  "status": "ok" | "refused" | "partial" | "error",
+  "command": "scan" | "deploy" | "withdraw" | "rebalance" | "migrate" | "emergency",
+  "scout": { "status", "wallet", "balances", "positions", "options", "best_move", "break_prices", "data_sources" },
+  "reserve": { "signal": "GREEN|YELLOW|RED|DATA_UNAVAILABLE", "reserve_ratio", "score", "sbtc_circulating", "btc_reserve", "signer_address", "recommendation" },
+  "guardian": { "can_proceed", "refusals", "slippage", "volume", "gas", "cooldown", "relay", "prices" },
+  "action": { "description", "txids", "details": { "instructions": [...] } },
+  "refusal_reasons": ["..."],
+  "error": "..."
+}
+```
+
+- `status: "ok"` — operation completed or instructions ready
+- `status: "refused"` — safety gate blocked the write, `refusal_reasons` explains why
+- `status: "error"` — invalid input or system failure
+- `doctor` outputs `{ "status": "ok"|"degraded"|"critical", "checks": [...], "message" }`
+- Error output: `{ "status": "error", "error": "descriptive message" }`
 
 ## Architecture
 
