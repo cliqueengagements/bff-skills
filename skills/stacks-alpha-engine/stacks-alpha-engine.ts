@@ -1229,11 +1229,20 @@ function buildWithdrawInstructions(protocol: Protocol, scout: ScoutResult): Exec
           contractAddress: "SP26NGV9AFZBX7XBDBS2C7EC7FCPSAV9PKREQNMVS",
           contractName: "liquidity-provider-v1", functionName: "redeem",
           functionArgs: [{ type: "uint", value: shares }, { type: "principal", value: wallet }],
-          postConditions: [{
-            type: "ft", principal: "SP26NGV9AFZBX7XBDBS2C7EC7FCPSAV9PKREQNMVS.liquidity-provider-v1",
-            asset: AEUSDC_TOKEN, assetName: "bridged-usdc",
-            conditionCode: "lte", amount: expectedAeusdc,
-          }],
+          postConditions: [
+            // Cap outflow from pool (upper bound)
+            {
+              type: "ft", principal: "SP26NGV9AFZBX7XBDBS2C7EC7FCPSAV9PKREQNMVS.liquidity-provider-v1",
+              asset: AEUSDC_TOKEN, assetName: "bridged-usdc",
+              conditionCode: "lte", amount: expectedAeusdc,
+            },
+            // Guarantee minimum received by wallet — catches pool returning 0
+            {
+              type: "ft", principal: wallet,
+              asset: AEUSDC_TOKEN, assetName: "bridged-usdc",
+              conditionCode: "gte", amount: shares,
+            },
+          ],
         },
         description: `Redeem ${shares} LP shares for aeUSDC from Granite lending pool`,
       }];
