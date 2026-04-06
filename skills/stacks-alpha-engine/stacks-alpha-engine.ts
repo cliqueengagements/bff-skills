@@ -118,6 +118,7 @@ interface GranitePosition {
   has_position: boolean; detail: string;
   supply_apy_pct?: number; borrow_apr_pct?: number; utilization_pct?: number;
   accepted_token: string; // "aeUSDC" — NOT sBTC
+  lp_shares?: string; // raw share count from on-chain position
 }
 interface HermeticaPosition {
   has_position: boolean; detail: string;
@@ -603,21 +604,26 @@ async function scoutGranite(wallet: string): Promise<{ position: GranitePosition
     }
 
     let hasPosition = false;
+    let lpShares = 0n;
     if (userPos.okay && userPos.result) {
       const parsed = parseClarityHex(userPos.result);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         const shares = (parsed as Record<string, ClarityValue>)["shares"] ?? (parsed as Record<string, ClarityValue>)["lp-shares"];
-        hasPosition = typeof shares === "bigint" && shares > 0n;
+        if (typeof shares === "bigint" && shares > 0n) {
+          hasPosition = true;
+          lpShares = shares;
+        }
       }
     }
 
     return {
       position: {
         has_position: hasPosition,
-        detail: hasPosition ? "Active aeUSDC supply on Granite LP" : "No aeUSDC supply on Granite LP",
+        detail: hasPosition ? `Active aeUSDC supply on Granite LP (${lpShares} shares)` : "No aeUSDC supply on Granite LP",
         supply_apy_pct: round(supplyApy, 2), borrow_apr_pct: round(borrowApr, 2),
         utilization_pct: round(utilization, 2),
         accepted_token: "aeUSDC",
+        lp_shares: lpShares.toString(),
       }, sources,
     };
   } catch {
@@ -1073,20 +1079,24 @@ function buildDeployInstructions(protocol: Protocol, amount: number, token: stri
           params: { action: "swap", tokenIn: token, tokenOut: "usdh", amount: String(amount) },
           description: `Step 1: Swap ${amount} ${token} -> USDh on Bitflow`,
         });
+        // Step 2 amount depends on Step 1 swap output — use input amount as estimate
+        // Agent must read swap tx result and substitute actual received amount before executing
+        const hermeticaEstimate = String(amount);
         instructions.push({
           tool: "call_contract",
           params: {
             contractAddress: HERMETICA,
             contractName: "staking-v1",
             functionName: "stake",
-            functionArgs: [{ type: "uint", value: "received_amount" }],
+            functionArgs: [{ type: "uint", value: hermeticaEstimate }],
             postConditions: [{
               type: "ft", principal: wallet,
               asset: USDH_TOKEN, assetName: "usdh-token",
-              conditionCode: "lte", amount: "received_amount",
+              conditionCode: "lte", amount: hermeticaEstimate,
             }],
+            _note: "SEQUENTIAL: execute after Step 1 confirms. Replace amount with actual swap output from tx receipt.",
           },
-          description: "Step 2: Stake received USDh into Hermetica sUSDh",
+          description: `Step 2: Stake ~${hermeticaEstimate} USDh into Hermetica sUSDh (adjust amount from Step 1 output)`,
         });
       }
       break;
@@ -1120,6 +1130,9 @@ function buildDeployInstructions(protocol: Protocol, amount: number, token: stri
           params: { action: "swap", tokenIn: token, tokenOut: "aeusdc", amount: String(amount) },
           description: `Step 1: Swap ${amount} ${token} -> aeUSDC on Bitflow`,
         });
+        // Step 2 amount depends on Step 1 swap output — use input amount as estimate
+        // Agent must read swap tx result and substitute actual received amount before executing
+        const graniteEstimate = String(amount);
         instructions.push({
           tool: "call_contract",
           params: {
@@ -1127,16 +1140,17 @@ function buildDeployInstructions(protocol: Protocol, amount: number, token: stri
             contractName: "liquidity-provider-v1",
             functionName: "deposit",
             functionArgs: [
-              { type: "uint", value: "received_amount" },
+              { type: "uint", value: graniteEstimate },
               { type: "principal", value: wallet },
             ],
             postConditions: [{
               type: "ft", principal: wallet,
               asset: AEUSDC_TOKEN, assetName: "bridged-usdc",
-              conditionCode: "lte", amount: "received_amount",
+              conditionCode: "lte", amount: graniteEstimate,
             }],
+            _note: "SEQUENTIAL: execute after Step 1 confirms. Replace amount with actual swap output from tx receipt.",
           },
-          description: "Step 2: Deposit received aeUSDC to Granite lending pool",
+          description: `Step 2: Deposit ~${graniteEstimate} aeUSDC to Granite lending pool (adjust amount from Step 1 output)`,
         });
       }
       break;
@@ -1201,23 +1215,27 @@ function buildWithdrawInstructions(protocol: Protocol, scout: ScoutResult): Exec
     }
 
     case "granite": {
-      // Post-condition: contract sends aeUSDC back to wallet, capped at wallet's deposit + interest
-      // Use aeUSDC balance upper bound — Granite withdraw(0) returns all shares as aeUSDC
-      const aeBalance = Math.floor(scout.balances.aeusdc.amount * 1e6);
-      const expectedAeusdc = String(Math.max(aeBalance * 2, 1_000_000_000)); // 2x current or 1000 aeUSDC cap
+      // Use actual LP shares from on-chain position — not hardcoded 0
+      const granitePos = scout.positions.granite;
+      const shares = granitePos.lp_shares ?? "0";
+      if (shares === "0") return [{ tool: "info", params: {}, description: "No Granite LP position to withdraw" }];
+      // Post-condition: contract sends aeUSDC back to wallet
+      // Upper bound: shares value + 10% buffer for accrued interest
+      const sharesNum = BigInt(shares);
+      const expectedAeusdc = String(sharesNum + sharesNum / 10n); // shares + 10% interest buffer
       return [{
         tool: "call_contract",
         params: {
           contractAddress: "SP26NGV9AFZBX7XBDBS2C7EC7FCPSAV9PKREQNMVS",
           contractName: "liquidity-provider-v1", functionName: "withdraw",
-          functionArgs: [{ type: "uint", value: 0 }, { type: "principal", value: wallet }],
+          functionArgs: [{ type: "uint", value: shares }, { type: "principal", value: wallet }],
           postConditions: [{
             type: "ft", principal: "SP26NGV9AFZBX7XBDBS2C7EC7FCPSAV9PKREQNMVS.liquidity-provider-v1",
             asset: AEUSDC_TOKEN, assetName: "bridged-usdc",
             conditionCode: "lte", amount: expectedAeusdc,
           }],
         },
-        description: "Withdraw all aeUSDC from Granite lending pool",
+        description: `Withdraw ${shares} LP shares (aeUSDC) from Granite lending pool`,
       }];
     }
 
