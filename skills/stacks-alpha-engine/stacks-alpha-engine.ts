@@ -1219,15 +1219,15 @@ function buildWithdrawInstructions(protocol: Protocol, scout: ScoutResult): Exec
       const granitePos = scout.positions.granite;
       const shares = granitePos.lp_shares ?? "0";
       if (shares === "0") return [{ tool: "info", params: {}, description: "No Granite LP position to withdraw" }];
-      // Post-condition: contract sends aeUSDC back to wallet
-      // Upper bound: shares value + 10% buffer for accrued interest
+      // Granite follows ERC-4626: redeem(shares) burns share count, withdraw(assets) takes asset amount.
+      // We have the share count, so use redeem().
       const sharesNum = BigInt(shares);
-      const expectedAeusdc = String(sharesNum + sharesNum / 10n); // shares + 10% interest buffer
+      const expectedAeusdc = String(sharesNum + sharesNum / 10n); // shares + 10% interest buffer for post-condition
       return [{
         tool: "call_contract",
         params: {
           contractAddress: "SP26NGV9AFZBX7XBDBS2C7EC7FCPSAV9PKREQNMVS",
-          contractName: "liquidity-provider-v1", functionName: "withdraw",
+          contractName: "liquidity-provider-v1", functionName: "redeem",
           functionArgs: [{ type: "uint", value: shares }, { type: "principal", value: wallet }],
           postConditions: [{
             type: "ft", principal: "SP26NGV9AFZBX7XBDBS2C7EC7FCPSAV9PKREQNMVS.liquidity-provider-v1",
@@ -1235,7 +1235,7 @@ function buildWithdrawInstructions(protocol: Protocol, scout: ScoutResult): Exec
             conditionCode: "lte", amount: expectedAeusdc,
           }],
         },
-        description: `Withdraw ${shares} LP shares (aeUSDC) from Granite lending pool`,
+        description: `Redeem ${shares} LP shares for aeUSDC from Granite lending pool`,
       }];
     }
 

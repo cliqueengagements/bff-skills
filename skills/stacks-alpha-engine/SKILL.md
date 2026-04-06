@@ -23,7 +23,7 @@ Cross-protocol yield executor covering **all 4 major Stacks DeFi protocols** —
 |----------|---------|---------|----------|--------|
 | Zest v2 | sBTC, wSTX, stSTX, USDC, USDh | `zest_supply` | `zest_withdraw` | MCP native |
 | Hermetica | USDh -> sUSDh | `staking-v1.stake` | `staking-v1.unstake` + `silo.withdraw` | call_contract |
-| Granite | aeUSDC | `liquidity-provider-v1.deposit` | `.withdraw` / `.redeem` | call_contract |
+| Granite | aeUSDC | `liquidity-provider-v1.deposit` | `.redeem` (ERC-4626 shares) | call_contract |
 | HODLMM | sBTC, STX, USDCx, USDh, aeUSDC (per pool) | `add-liquidity-simple` | `withdraw-liquidity-simple` | Bitflow skill |
 
 **3-tier yield mapping:**
@@ -104,7 +104,7 @@ All commands output JSON to stdout:
 |----------|---------|----------|-------|--------|
 | Zest v2 | `zest_supply` | `zest_withdraw` | sBTC | MCP native |
 | Hermetica | `staking-v1.stake(uint)` | `staking-v1.unstake(uint)` + `silo-v1-1.withdraw(uint)` | USDh/sUSDh | call_contract |
-| Granite | `lp-v1.deposit(uint, principal)` | `lp-v1.withdraw(uint, principal)` | aeUSDC | call_contract |
+| Granite | `lp-v1.deposit(assets, principal)` | `lp-v1.redeem(shares, principal)` | aeUSDC | call_contract |
 | HODLMM | `add-liquidity-simple` | `withdraw-liquidity-simple` | per pool pair | Bitflow skill |
 
 All 4 protocols have **zero trait_reference** requirements in their write paths.
