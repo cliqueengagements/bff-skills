@@ -1486,146 +1486,147 @@ function pad(s: string, len: number): string {
 
 function renderReport(scout: ScoutResult, reserve: ReserveResult, guardian: GuardianResult): string {
   const L: string[] = [];
-  const sep = "─".repeat(72);
 
   L.push("");
-  L.push(sep);
-  L.push("  Stacks Alpha Engine — Full Report");
-  L.push(`  Wallet: ${scout.wallet}`);
-  L.push(sep);
+  L.push("Stacks Alpha Engine — Full Report");
+  L.push(`Wallet: ${scout.wallet}`);
+  L.push("");
 
   // Section 1: What You Have
   const walletUsd = round(scout.balances.sbtc.usd + scout.balances.stx.usd + scout.balances.usdcx.usd + scout.balances.usdh.usd + scout.balances.susdh.usd + scout.balances.aeusdc.usd, 2);
+  L.push("## 1. What You Have (available in wallet)");
   L.push("");
-  L.push("  1. WALLET");
+  L.push("| Token   | Amount             | USD      |");
+  L.push("|---------|--------------------|---------:|");
+  L.push(`| sBTC    | ${pad(String(scout.balances.sbtc.amount), 18)} | $${scout.balances.sbtc.usd} |`);
+  L.push(`| STX     | ${pad(String(scout.balances.stx.amount), 18)} | $${scout.balances.stx.usd} |`);
+  L.push(`| USDCx   | ${pad(String(scout.balances.usdcx.amount), 18)} | $${scout.balances.usdcx.usd} |`);
+  L.push(`| USDh    | ${pad(String(scout.balances.usdh.amount), 18)} | $${scout.balances.usdh.usd} |`);
+  L.push(`| sUSDh   | ${pad(String(scout.balances.susdh.amount), 18)} | $${scout.balances.susdh.usd} |`);
+  L.push(`| aeUSDC  | ${pad(String(scout.balances.aeusdc.amount), 18)} | $${scout.balances.aeusdc.usd} |`);
+  L.push(`| **Wallet Total** |              | **$${walletUsd}** |`);
   L.push("");
-  L.push(`    ${pad("Token", 8)} ${pad("Amount", 20)} USD`);
-  L.push(`    ${pad("─────", 8)} ${pad("──────", 20)} ───────`);
-  for (const [key, label] of [["sbtc","sBTC"],["stx","STX"],["usdcx","USDCx"],["usdh","USDh"],["susdh","sUSDh"],["aeusdc","aeUSDC"]] as const) {
-    const b = (scout.balances as Record<string, TokenBalance>)[key];
-    if (b && (b.amount > 0 || key === "sbtc" || key === "stx" || key === "usdcx")) {
-      L.push(`    ${pad(label, 8)} ${pad(String(b.amount), 20)} $${b.usd}`);
-    }
-  }
-  L.push(`    ${pad("TOTAL", 8)} ${pad("", 20)} $${walletUsd}`);
 
-  // Section 2: Positions
+  // Section 2: Positions (4 protocols)
+  L.push("## 2. Positions (deployed capital)");
   L.push("");
-  L.push("  2. POSITIONS");
-  L.push("");
+  L.push("| Protocol   | Status     | Detail |");
+  L.push("|------------|------------|--------|");
 
   const z = scout.positions.zest;
-  L.push(`    Zest       ${z.has_position ? "[ACTIVE]" : "[idle]"}  ${z.detail}`);
+  L.push(`| Zest       | ${z.has_position ? "**ACTIVE**" : "Idle"} | ${z.detail} |`);
 
   const herm = scout.positions.hermetica;
-  const hermActive = scout.balances.susdh.amount > 0;
-  const hermDetail = hermActive ? `${scout.balances.susdh.amount} sUSDh (rate: ${herm.exchange_rate})` : herm.detail;
-  L.push(`    Hermetica  ${hermActive ? "[ACTIVE]" : "[idle]"}  ${hermDetail}`);
+  const hermDetail = scout.balances.susdh.amount > 0
+    ? `${scout.balances.susdh.amount} sUSDh staked (rate: ${herm.exchange_rate})`
+    : herm.detail;
+  L.push(`| Hermetica  | ${scout.balances.susdh.amount > 0 ? "**ACTIVE**" : "Idle"} | ${hermDetail} |`);
 
   const g = scout.positions.granite;
-  L.push(`    Granite    ${g.has_position ? "[ACTIVE]" : "[idle]"}  ${g.detail} (accepts: ${g.accepted_token})`);
+  L.push(`| Granite    | ${g.has_position ? "**ACTIVE**" : "Idle"} | ${g.detail} (accepts: ${g.accepted_token}) |`);
 
   const h = scout.positions.hodlmm;
+  let deployedUsd = 0;
   if (h.has_position) {
     for (const p of h.pools) {
-      const rangeTag = p.in_range ? "IN RANGE" : "!! OUT OF RANGE";
-      const binStr = p.user_bins ? `${p.user_bins.count} bins (${p.user_bins.min}-${p.user_bins.max})` : "";
-      const val = p.estimated_value_usd !== null ? `$${p.estimated_value_usd}` : "";
-      L.push(`    HODLMM     [ACTIVE]  ${p.name} ${rangeTag} bin ${p.active_bin} ${binStr} ${val}`);
+      const rangeTag = p.in_range ? "IN RANGE" : "**OUT OF RANGE**";
+      const binStr = p.user_bins ? `${p.user_bins.count} bins (${p.user_bins.min}-${p.user_bins.max})` : "no bins";
+      const valueStr = p.estimated_value_usd !== null ? `$${p.estimated_value_usd}` : "-";
+      if (p.estimated_value_usd) deployedUsd += p.estimated_value_usd;
+      L.push(`| HODLMM     | **ACTIVE** | ${p.name} ${rangeTag} bin ${p.active_bin}, ${binStr}, ${valueStr} |`);
     }
   } else {
-    L.push("    HODLMM     [idle]    No positions across 8 pools");
+    L.push("| HODLMM     | Idle | No positions across 8 pools |");
   }
+  L.push("");
 
-  // Section 3: sBTC Reserve
+  // Section 3: sBTC Reserve Status
+  L.push("## 3. sBTC Reserve Status (Proof of Reserve)");
   L.push("");
-  L.push("  3. sBTC RESERVE (Proof of Reserve)");
+  L.push(`| Check | Value |`);
+  L.push(`|-------|------:|`);
+  L.push(`| Signal | **${reserve.signal}** |`);
+  L.push(`| Reserve ratio | ${reserve.reserve_ratio ?? "N/A"} |`);
+  L.push(`| BTC in vault | ${reserve.btc_reserve} BTC |`);
+  L.push(`| sBTC circulating | ${reserve.sbtc_circulating} sBTC |`);
+  L.push(`| Verdict | ${reserve.recommendation} |`);
   L.push("");
-  const sigIcon = reserve.signal === "GREEN" ? "[OK]" : reserve.signal === "YELLOW" ? "[WARN]" : "[!!]";
-  L.push(`    Signal:     ${sigIcon} ${reserve.signal}`);
-  L.push(`    Ratio:      ${reserve.reserve_ratio ?? "N/A"}`);
-  L.push(`    BTC vault:  ${reserve.btc_reserve} BTC`);
-  L.push(`    sBTC supply: ${reserve.sbtc_circulating} sBTC`);
-  L.push(`    Verdict:    ${reserve.recommendation}`);
 
-  // Section 4: Yield Options
+  // Section 4: Yield Options (3-tier)
+  L.push("## 4. Yield Options");
   L.push("");
-  L.push("  4. YIELD OPTIONS");
 
   const deployNow = scout.options.filter(o => o.tier === "deploy_now");
   const swapFirst = scout.options.filter(o => o.tier === "swap_first");
   const acquire = scout.options.filter(o => o.tier === "acquire_to_unlock");
 
   if (deployNow.length > 0) {
-    L.push("");
-    L.push("    --- Deploy now (you hold the token) ---");
-    L.push(`    ${pad("#", 3)} ${pad("Protocol", 10)} ${pad("Pool", 22)} ${pad("APY", 8)} ${pad("Daily", 10)} ${pad("YTG", 8)} Note`);
+    L.push("### You can deploy now");
+    L.push("| # | Protocol | Pool | Token | APY | Daily | Monthly | YTG | Note |");
+    L.push("|---|----------|------|-------|----:|------:|--------:|----:|------|");
     deployNow.forEach((o, i) => {
-      const ytgStr = o.ytg_profitable ? `${o.ytg_ratio}x` : `${o.ytg_ratio}x !`;
-      L.push(`    ${pad(String(i + 1), 3)} ${pad(o.protocol, 10)} ${pad(o.pool, 22)} ${pad(o.apy_pct + "%", 8)} ${pad("$" + o.daily_usd, 10)} ${pad(ytgStr, 8)} ${o.note}`);
+      const ytg = o.ytg_profitable ? `${o.ytg_ratio}x` : `**${o.ytg_ratio}x**`;
+      L.push(`| ${i + 1} | ${o.protocol} | ${o.pool} | ${o.token_needed} | ${o.apy_pct}% | $${o.daily_usd} | $${o.monthly_usd} | ${ytg} | ${o.note} |`);
     });
     L.push("");
-    L.push("    YTG = Yield-to-Gas (7d yield / gas). ! = unprofitable (<3x), deploy blocked.");
+    L.push("_YTG = Yield-to-Gas ratio (7d yield / gas cost). **Bold** = unprofitable (<3x). Deploy blocked unless --force._");
+    L.push("");
   }
 
   if (swapFirst.length > 0) {
-    L.push("");
-    L.push("    --- Swap first, then deploy ---");
+    L.push("### Swap first, then deploy");
+    L.push("| # | Protocol | Pool | Token | APY | YTG | Swap | Note |");
+    L.push("|---|----------|------|-------|----:|----:|------|------|");
     swapFirst.forEach((o, i) => {
-      const ytgStr = o.ytg_profitable ? `${o.ytg_ratio}x` : `${o.ytg_ratio}x !`;
-      L.push(`    ${i + 1}. ${o.protocol} ${o.pool} @ ${o.apy_pct}% APY  YTG: ${ytgStr}`);
-      L.push(`       ${o.swap_cost_note ?? ""}`);
-      L.push(`       ${o.note}`);
+      const ytg = o.ytg_profitable ? `${o.ytg_ratio}x` : `**${o.ytg_ratio}x**`;
+      L.push(`| ${i + 1} | ${o.protocol} | ${o.pool} | ${o.token_needed} | ${o.apy_pct}% | ${ytg} | ${o.swap_cost_note ?? "-"} | ${o.note} |`);
     });
+    L.push("");
   }
 
   if (acquire.length > 0) {
-    L.push("");
-    L.push("    --- Acquire to unlock ---");
+    L.push("### Acquire to unlock");
+    L.push("| Protocol | Pool | Token needed | APY | How to get |");
+    L.push("|----------|------|-------------|----:|------------|");
     acquire.forEach(o => {
-      L.push(`    - ${o.protocol} ${o.pool} @ ${o.apy_pct}% APY (need ${o.token_needed})`);
-      L.push(`      ${o.note}`);
+      L.push(`| ${o.protocol} | ${o.pool} | ${o.token_needed} | ${o.apy_pct}% | ${o.note} |`);
     });
+    L.push("");
   }
 
   // Section 5: Best Move
+  L.push("## 5. Best Safe Move");
   L.push("");
-  L.push("  5. BEST SAFE MOVE");
+  L.push(`> ${scout.best_move.recommendation}`);
   L.push("");
-  L.push(`    >>> ${scout.best_move.recommendation}`);
 
   // Section 6: Break Prices
   const bp = scout.break_prices;
+  L.push("## 6. Break Prices");
   L.push("");
-  L.push("  6. BREAK PRICES");
+  L.push("| Trigger | sBTC Price |");
+  L.push("|---------|----------:|");
+  if (bp.hodlmm_range_exit_low_usd) L.push(`| HODLMM range exit (low) | **$${bp.hodlmm_range_exit_low_usd.toLocaleString()}** |`);
+  L.push(`| Current sBTC price | $${bp.current_sbtc_price_usd.toLocaleString()} |`);
+  if (bp.hodlmm_range_exit_high_usd) L.push(`| HODLMM range exit (high) | **$${bp.hodlmm_range_exit_high_usd.toLocaleString()}** |`);
   L.push("");
-  if (bp.hodlmm_range_exit_low_usd) L.push(`    Range exit (low):  $${bp.hodlmm_range_exit_low_usd.toLocaleString()}`);
-  L.push(`    Current sBTC:      $${bp.current_sbtc_price_usd.toLocaleString()}`);
-  if (bp.hodlmm_range_exit_high_usd) L.push(`    Range exit (high): $${bp.hodlmm_range_exit_high_usd.toLocaleString()}`);
-  if (bp.hodlmm_range_exit_low_usd && bp.hodlmm_range_exit_high_usd) {
-    const bufLow = round(bp.current_sbtc_price_usd - bp.hodlmm_range_exit_low_usd, 0);
-    const bufHigh = round(bp.hodlmm_range_exit_high_usd - bp.current_sbtc_price_usd, 0);
-    L.push(`    Buffer:            $${bufLow.toLocaleString()} above low, $${bufHigh.toLocaleString()} below high`);
-  }
 
   // Section 7: Safety Gates
+  L.push("## 7. Safety Gates");
   L.push("");
-  L.push("  7. SAFETY GATES");
+  L.push(`| Gate | Status | Detail |`);
+  L.push(`|------|--------|--------|`);
+  L.push(`| PoR Reserve | ${reserve.signal === "GREEN" ? "PASS" : "**FAIL**"} | ${reserve.signal} |`);
+  L.push(`| Slippage | ${guardian.slippage.ok ? "PASS" : "**FAIL**"} | ${guardian.slippage.pct}% (max ${MAX_SLIPPAGE_PCT}%) |`);
+  L.push(`| 24h Volume | ${guardian.volume.ok ? "PASS" : "**FAIL**"} | $${Math.round(guardian.volume.usd).toLocaleString()} (min $${MIN_24H_VOLUME_USD.toLocaleString()}) |`);
+  L.push(`| Gas | ${guardian.gas.ok ? "PASS" : "**FAIL**"} | ${guardian.gas.estimated_stx} STX (max ${MAX_GAS_STX}) |`);
+  L.push(`| Cooldown | ${guardian.cooldown.ok ? "PASS" : "**FAIL**"} | ${guardian.cooldown.remaining_hours > 0 ? `${guardian.cooldown.remaining_hours}h remaining` : "Ready"} |`);
+  L.push(`| Prices | ${guardian.prices.ok ? "PASS" : "**FAIL**"} | ${guardian.prices.detail} |`);
+  L.push(`| **Can execute writes?** | **${guardian.can_proceed ? "YES" : "NO"}** | ${guardian.refusals.length > 0 ? guardian.refusals.join("; ") : "All gates pass"} |`);
   L.push("");
-  const g7 = (ok: boolean, label: string, detail: string) => `    ${ok ? "[OK]" : "[!!]"} ${pad(label, 14)} ${detail}`;
-  L.push(g7(reserve.signal === "GREEN", "PoR Reserve", reserve.signal));
-  L.push(g7(guardian.slippage.ok, "Slippage", `${guardian.slippage.pct}% (max ${MAX_SLIPPAGE_PCT}%)`));
-  L.push(g7(guardian.volume.ok, "24h Volume", `$${Math.round(guardian.volume.usd).toLocaleString()} (min $${MIN_24H_VOLUME_USD.toLocaleString()})`));
-  L.push(g7(guardian.gas.ok, "Gas", `${guardian.gas.estimated_stx} STX (max ${MAX_GAS_STX})`));
-  L.push(g7(guardian.cooldown.ok, "Cooldown", guardian.cooldown.remaining_hours > 0 ? `${guardian.cooldown.remaining_hours}h remaining` : "Ready"));
-  L.push(g7(guardian.prices.ok, "Prices", guardian.prices.detail));
-  L.push("");
-  L.push(`    >>> Writes: ${guardian.can_proceed ? "ALLOWED" : "BLOCKED"} ${guardian.refusals.length > 0 ? "— " + guardian.refusals.join("; ") : "— all gates pass"}`);
 
-  L.push("");
-  L.push(sep);
-  L.push(`  ${scout.data_sources.length} live reads | ${scout.status} | stacks-alpha-engine v2.0.0`);
-  L.push(sep);
+  L.push("---");
+  L.push(`Data sources: ${scout.data_sources.length} live reads | Status: ${scout.status} | Engine: stacks-alpha-engine v2.0.0`);
   L.push("");
 
   return L.join("\n");
