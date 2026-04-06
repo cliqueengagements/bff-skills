@@ -52,6 +52,7 @@ No other skill covers all 4 Stacks DeFi protocols with working read AND write pa
 - PoR YELLOW blocks all writes (read-only mode).
 - Guardian gates: slippage <=0.5%, 24h volume >=$10K, gas <=50 STX, 4h rebalance cooldown, price source availability.
 - Crypto self-test failure (bech32m vectors or P2TR derivation) blocks ALL operations including reads.
+- YTG (Yield-to-Gas) profit gate: blocks deploys where 7-day projected yield < 3x gas cost. Use `--force` to override.
 - Post-conditions on all `call_contract` writes prevent unexpected token transfers.
 - Hermetica unstake has 7-day cooldown — engine warns and provides claim instructions.
 - Granite LP accepts **aeUSDC only** (not sBTC). Engine correctly routes aeUSDC to Granite.

@@ -138,6 +138,8 @@ interface YieldOption {
   protocol: string; pool: string; token_needed: string; apy_pct: number;
   daily_usd: number; monthly_usd: number; gas_to_enter_stx: number;
   swap_cost_note: string | null; note: string;
+  ytg_ratio: number;       // 7d projected yield / gas cost in USD (>3 = profitable); set by post-processing
+  ytg_profitable: boolean; // true if 7d yield > 3x gas cost; set by post-processing
 }
 
 interface BreakPrices {
@@ -786,6 +788,15 @@ async function getYieldOptions(
     }
   } catch { /* unavailable */ }
 
+  // YTG (Yield-to-Gas) profit gate: 7d projected yield must exceed 3x gas cost
+  const stxPriceUsd = prices.stx;
+  for (const opt of options) {
+    const gasUsd = opt.gas_to_enter_stx * stxPriceUsd;
+    const yield7d = opt.daily_usd * 7;
+    opt.ytg_ratio = gasUsd > 0 ? round(yield7d / gasUsd, 2) : 0;
+    opt.ytg_profitable = yield7d > gasUsd * 3;
+  }
+
   // Sort: deploy_now first, then swap_first, then acquire_to_unlock; within each tier by APY desc
   const tierOrder: Record<YieldTier, number> = { deploy_now: 0, swap_first: 1, acquire_to_unlock: 2 };
   options.sort((a, b) => {
@@ -1296,6 +1307,11 @@ async function _runPipeline(wallet: string, command: string, opts: Record<string
         return { status: "refused", command, scout, reserve, guardian, refusal_reasons: [`${protocol} APY is 0%. Use --force to override.`] };
       }
 
+      // YTG profit gate: 7d yield must exceed 3x gas cost
+      if (targetOpt && !targetOpt.ytg_profitable && !opts.force) {
+        return { status: "refused", command, scout, reserve, guardian, refusal_reasons: [`YTG gate: 7d yield ($${round(targetOpt.daily_usd * 7, 4)}) < 3x gas cost. Ratio: ${targetOpt.ytg_ratio}x. Use --force to override.`] };
+      }
+
       instructions = buildDeployInstructions(protocol, amount, token, scout);
       description = `Deploy ${amount} ${token} to ${protocol}`;
       break;
@@ -1546,20 +1562,24 @@ function renderReport(scout: ScoutResult, reserve: ReserveResult, guardian: Guar
 
   if (deployNow.length > 0) {
     L.push("### You can deploy now");
-    L.push("| # | Protocol | Pool | Token | APY | Daily | Monthly | Note |");
-    L.push("|---|----------|------|-------|----:|------:|--------:|------|");
+    L.push("| # | Protocol | Pool | Token | APY | Daily | Monthly | YTG | Note |");
+    L.push("|---|----------|------|-------|----:|------:|--------:|----:|------|");
     deployNow.forEach((o, i) => {
-      L.push(`| ${i + 1} | ${o.protocol} | ${o.pool} | ${o.token_needed} | ${o.apy_pct}% | $${o.daily_usd} | $${o.monthly_usd} | ${o.note} |`);
+      const ytg = o.ytg_profitable ? `${o.ytg_ratio}x` : `**${o.ytg_ratio}x**`;
+      L.push(`| ${i + 1} | ${o.protocol} | ${o.pool} | ${o.token_needed} | ${o.apy_pct}% | $${o.daily_usd} | $${o.monthly_usd} | ${ytg} | ${o.note} |`);
     });
+    L.push("");
+    L.push("_YTG = Yield-to-Gas ratio (7d yield / gas cost). **Bold** = unprofitable (<3x). Deploy blocked unless --force._");
     L.push("");
   }
 
   if (swapFirst.length > 0) {
     L.push("### Swap first, then deploy");
-    L.push("| # | Protocol | Pool | Token | APY | Swap | Note |");
-    L.push("|---|----------|------|-------|----:|------|------|");
+    L.push("| # | Protocol | Pool | Token | APY | YTG | Swap | Note |");
+    L.push("|---|----------|------|-------|----:|----:|------|------|");
     swapFirst.forEach((o, i) => {
-      L.push(`| ${i + 1} | ${o.protocol} | ${o.pool} | ${o.token_needed} | ${o.apy_pct}% | ${o.swap_cost_note ?? "-"} | ${o.note} |`);
+      const ytg = o.ytg_profitable ? `${o.ytg_ratio}x` : `**${o.ytg_ratio}x**`;
+      L.push(`| ${i + 1} | ${o.protocol} | ${o.pool} | ${o.token_needed} | ${o.apy_pct}% | ${ytg} | ${o.swap_cost_note ?? "-"} | ${o.note} |`);
     });
     L.push("");
   }
