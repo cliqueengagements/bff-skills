@@ -15,7 +15,7 @@ metadata:
 
 ## What it does
 
-Cross-protocol yield executor covering **all 4 major Stacks DeFi protocols** — Zest v2, Hermetica, Granite, and HODLMM (Bitflow DLMM). Scans 6 tokens (sBTC, STX, USDCx, USDh, sUSDh, aeUSDC) across the wallet, reads positions and live yields from all 4 protocols, maps yield opportunities into 3 tiers (deploy now / swap first / acquire to unlock), verifies sBTC reserve integrity via BIP-341 P2TR derivation, checks 6 market safety gates, then executes deploy/withdraw/rebalance/migrate/emergency operations. Every write runs a mandatory safety pipeline: Scout -> Reserve -> Guardian -> Executor. No bypasses.
+Cross-protocol yield executor covering **all 4 major Stacks DeFi protocols** — Zest v2, Hermetica, Granite, and HODLMM (Bitflow DLMM). Scans 6 tokens (sBTC, STX, USDCx, USDh, sUSDh, aeUSDC) across the wallet, reads positions and live yields from all 4 protocols, maps yield opportunities into 3 tiers (deploy now / swap first / acquire to unlock) with **YTG (Yield-to-Gas) profitability ratios**, verifies sBTC reserve integrity via BIP-341 P2TR derivation, checks 6 market safety gates + YTG profit gate, then executes deploy/withdraw/rebalance/migrate/emergency operations. Every write runs a mandatory safety pipeline: Scout -> Reserve -> Guardian -> YTG -> Executor. No bypasses.
 
 **Protocol coverage:**
 
@@ -67,7 +67,7 @@ All commands output JSON to stdout:
 {
   "status": "ok" | "refused" | "partial" | "error",
   "command": "scan" | "deploy" | "withdraw" | "rebalance" | "migrate" | "emergency",
-  "scout": { "status", "wallet", "balances" (6 tokens), "positions" (4 protocols), "options" (3-tier), "best_move", "break_prices", "data_sources" },
+  "scout": { "status", "wallet", "balances" (6 tokens), "positions" (4 protocols), "options" (3-tier, each with ytg_ratio + ytg_profitable), "best_move", "break_prices", "data_sources" },
   "reserve": { "signal": "GREEN|YELLOW|RED|DATA_UNAVAILABLE", "reserve_ratio", "score", "sbtc_circulating", "btc_reserve", "signer_address", "recommendation" },
   "guardian": { "can_proceed", "refusals", "slippage", "volume", "gas", "cooldown", "relay", "prices" },
   "action": { "description", "txids", "details": { "instructions": [...] } },
@@ -110,11 +110,12 @@ All 4 protocols have **zero trait_reference** requirements in their write paths.
 
 ## Safety Pipeline (every write)
 
-1. **Scout** reads wallet (6 tokens) + 4 protocols + yields + prices
+1. **Scout** reads wallet (6 tokens) + 4 protocols + yields + prices + YTG ratios
 2. **Reserve (PoR)** verifies sBTC is fully backed by real BTC
 3. **Guardian** checks 6 gates: slippage (<=0.5%), volume (>=$10K), gas (<=50 STX), cooldown (4h), relay, prices
-4. All pass -> **Executor** outputs transaction instructions
-5. Any fail -> refuse with specific reasons, no transaction
+4. **YTG gate** checks 7d projected yield > 3x gas cost (refuses unprofitable deploys)
+5. All pass -> **Executor** outputs transaction instructions
+6. Any fail -> refuse with specific reasons, no transaction
 
 ### PoR Signal Thresholds
 
