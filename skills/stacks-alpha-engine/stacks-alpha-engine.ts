@@ -1569,7 +1569,7 @@ function renderReport(scout: ScoutResult, reserve: ReserveResult, guardian: Guar
       L.push(`| ${i + 1} | ${o.protocol} | ${o.pool} | ${o.token_needed} | ${o.apy_pct}% | $${o.daily_usd} | $${o.monthly_usd} | ${ytg} | ${o.note} |`);
     });
     L.push("");
-    L.push("_YTG = Yield-to-Gas ratio (7d yield / gas cost). **Bold** = unprofitable (<3x). Deploy blocked unless --force._");
+    L.push("_YTG = Yield-to-Gas ratio (7d projected yield / gas cost to enter). Below 3x means gas eats your yield — hold until capital or APY grows. Use --force to override._");
     L.push("");
   }
 
