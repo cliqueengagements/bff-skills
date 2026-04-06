@@ -701,9 +701,9 @@ async function getYieldOptions(
 
     if (balances.sbtc.amount > 0) {
       const d = dailyUsd(balances.sbtc.usd, supplyApy);
-      options.push({ tier: "deploy_now", protocol: "Zest", pool: "sBTC Supply (v2)", token_needed: "sBTC", apy_pct: supplyApy, daily_usd: d, monthly_usd: round(d * 30, 2), gas_to_enter_stx: 0.03, swap_cost_note: null, note: supplyApy > 0 ? `Lending — ${round(utilPct, 1)}% utilization.` : `0% utilization — APY rises when borrowers arrive.` });
+      options.push({ tier: "deploy_now", protocol: "Zest", pool: "sBTC Supply (v2)", token_needed: "sBTC", apy_pct: supplyApy, daily_usd: d, monthly_usd: round(d * 30, 2), gas_to_enter_stx: 0.03, swap_cost_note: null, note: supplyApy > 0 ? `Lending — ${round(utilPct, 1)}% utilization.` : `0% utilization — APY rises when borrowers arrive.`, ytg_ratio: 0, ytg_profitable: false });
     } else {
-      options.push({ tier: "acquire_to_unlock", protocol: "Zest", pool: "sBTC Supply (v2)", token_needed: "sBTC", apy_pct: supplyApy, daily_usd: 0, monthly_usd: 0, gas_to_enter_stx: 0.03, swap_cost_note: null, note: `Need sBTC. Get via: Bitflow swap or sBTC bridge.` });
+      options.push({ tier: "acquire_to_unlock", protocol: "Zest", pool: "sBTC Supply (v2)", token_needed: "sBTC", apy_pct: supplyApy, daily_usd: 0, monthly_usd: 0, gas_to_enter_stx: 0.03, swap_cost_note: null, note: `Need sBTC. Get via: Bitflow swap or sBTC bridge.`, ytg_ratio: 0, ytg_profitable: false });
     }
   } catch { /* skip */ }
 
@@ -712,15 +712,15 @@ async function getYieldOptions(
     const apy = hermetica.apy_estimate_pct > 0 ? hermetica.apy_estimate_pct : 5.0; // fallback estimate
     if (balances.usdh.amount > 0) {
       const d = dailyUsd(balances.usdh.usd, apy);
-      options.push({ tier: "deploy_now", protocol: "Hermetica", pool: "USDh Staking (sUSDh)", token_needed: "USDh", apy_pct: apy, daily_usd: d, monthly_usd: round(d * 30, 2), gas_to_enter_stx: 0.02, swap_cost_note: null, note: `Stake USDh -> sUSDh. Rate: ${hermetica.exchange_rate} USDh/sUSDh. 7-day unstake cooldown.` });
+      options.push({ tier: "deploy_now", protocol: "Hermetica", pool: "USDh Staking (sUSDh)", token_needed: "USDh", apy_pct: apy, daily_usd: d, monthly_usd: round(d * 30, 2), gas_to_enter_stx: 0.02, swap_cost_note: null, note: `Stake USDh -> sUSDh. Rate: ${hermetica.exchange_rate} USDh/sUSDh. 7-day unstake cooldown.`, ytg_ratio: 0, ytg_profitable: false });
     } else if (balances.sbtc.amount > 0 || balances.usdcx.amount > 0) {
       // Swap path available
       const swapFrom = balances.sbtc.amount > 0 ? "sBTC" : "USDCx";
       const cap = balances.sbtc.amount > 0 ? balances.sbtc.usd : balances.usdcx.usd;
       const d = dailyUsd(cap, apy);
-      options.push({ tier: "swap_first", protocol: "Hermetica", pool: "USDh Staking (sUSDh)", token_needed: "USDh", apy_pct: apy, daily_usd: d, monthly_usd: round(d * 30, 2), gas_to_enter_stx: 0.1, swap_cost_note: `Swap ${swapFrom} -> USDh on Bitflow (~0.1-0.3% fee + gas)`, note: `Then stake USDh -> sUSDh. 7-day unstake cooldown.` });
+      options.push({ tier: "swap_first", protocol: "Hermetica", pool: "USDh Staking (sUSDh)", token_needed: "USDh", apy_pct: apy, daily_usd: d, monthly_usd: round(d * 30, 2), gas_to_enter_stx: 0.1, swap_cost_note: `Swap ${swapFrom} -> USDh on Bitflow (~0.1-0.3% fee + gas)`, note: `Then stake USDh -> sUSDh. 7-day unstake cooldown.`, ytg_ratio: 0, ytg_profitable: false });
     } else {
-      options.push({ tier: "acquire_to_unlock", protocol: "Hermetica", pool: "USDh Staking (sUSDh)", token_needed: "USDh", apy_pct: apy, daily_usd: 0, monthly_usd: 0, gas_to_enter_stx: 0.02, swap_cost_note: null, note: `Need USDh. Get via: Bitflow swap (sBTC/STX/USDCx -> USDh).` });
+      options.push({ tier: "acquire_to_unlock", protocol: "Hermetica", pool: "USDh Staking (sUSDh)", token_needed: "USDh", apy_pct: apy, daily_usd: 0, monthly_usd: 0, gas_to_enter_stx: 0.02, swap_cost_note: null, note: `Need USDh. Get via: Bitflow swap (sBTC/STX/USDCx -> USDh).`, ytg_ratio: 0, ytg_profitable: false });
     }
   }
 
@@ -728,12 +728,12 @@ async function getYieldOptions(
   if (granite.supply_apy_pct && granite.supply_apy_pct > 0) {
     if (balances.aeusdc.amount > 0) {
       const d = dailyUsd(balances.aeusdc.usd, granite.supply_apy_pct);
-      options.push({ tier: "deploy_now", protocol: "Granite", pool: "aeUSDC Lending LP", token_needed: "aeUSDC", apy_pct: granite.supply_apy_pct, daily_usd: d, monthly_usd: round(d * 30, 2), gas_to_enter_stx: 0.05, swap_cost_note: null, note: `Lending — ${granite.utilization_pct}% util, ${granite.borrow_apr_pct}% borrow APR.` });
+      options.push({ tier: "deploy_now", protocol: "Granite", pool: "aeUSDC Lending LP", token_needed: "aeUSDC", apy_pct: granite.supply_apy_pct, daily_usd: d, monthly_usd: round(d * 30, 2), gas_to_enter_stx: 0.05, swap_cost_note: null, note: `Lending — ${granite.utilization_pct}% util, ${granite.borrow_apr_pct}% borrow APR.`, ytg_ratio: 0, ytg_profitable: false });
     } else if (balances.usdcx.amount > 0) {
       const d = dailyUsd(balances.usdcx.usd, granite.supply_apy_pct);
-      options.push({ tier: "swap_first", protocol: "Granite", pool: "aeUSDC Lending LP", token_needed: "aeUSDC", apy_pct: granite.supply_apy_pct, daily_usd: d, monthly_usd: round(d * 30, 2), gas_to_enter_stx: 0.1, swap_cost_note: "Swap USDCx -> aeUSDC on Bitflow (~0.01% fee, stablecoin pair)", note: `Then deposit aeUSDC to Granite LP.` });
+      options.push({ tier: "swap_first", protocol: "Granite", pool: "aeUSDC Lending LP", token_needed: "aeUSDC", apy_pct: granite.supply_apy_pct, daily_usd: d, monthly_usd: round(d * 30, 2), gas_to_enter_stx: 0.1, swap_cost_note: "Swap USDCx -> aeUSDC on Bitflow (~0.01% fee, stablecoin pair)", note: `Then deposit aeUSDC to Granite LP.`, ytg_ratio: 0, ytg_profitable: false });
     } else {
-      options.push({ tier: "acquire_to_unlock", protocol: "Granite", pool: "aeUSDC Lending LP", token_needed: "aeUSDC", apy_pct: granite.supply_apy_pct, daily_usd: 0, monthly_usd: 0, gas_to_enter_stx: 0.05, swap_cost_note: null, note: `Need aeUSDC. Get via: Bitflow swap or bridge from Ethereum USDC.` });
+      options.push({ tier: "acquire_to_unlock", protocol: "Granite", pool: "aeUSDC Lending LP", token_needed: "aeUSDC", apy_pct: granite.supply_apy_pct, daily_usd: 0, monthly_usd: 0, gas_to_enter_stx: 0.05, swap_cost_note: null, note: `Need aeUSDC. Get via: Bitflow swap or bridge from Ethereum USDC.`, ytg_ratio: 0, ytg_profitable: false });
     }
   }
 
@@ -752,8 +752,8 @@ async function getYieldOptions(
         const tokenYMeta = TOKENS[def.tokenY];
         if (!tokenXMeta || !tokenYMeta) continue;
 
-        const hasX = (balances as Record<string, TokenBalance>)[def.tokenX]?.amount > 0;
-        const hasY = (balances as Record<string, TokenBalance>)[def.tokenY]?.amount > 0;
+        const hasX = (balances as unknown as Record<string, TokenBalance>)[def.tokenX]?.amount > 0;
+        const hasY = (balances as unknown as Record<string, TokenBalance>)[def.tokenY]?.amount > 0;
 
         let tier: YieldTier;
         let capUsd: number;
@@ -761,8 +761,8 @@ async function getYieldOptions(
 
         if (hasX || hasY) {
           tier = "deploy_now";
-          const xUsd = (balances as Record<string, TokenBalance>)[def.tokenX]?.usd ?? 0;
-          const yUsd = (balances as Record<string, TokenBalance>)[def.tokenY]?.usd ?? 0;
+          const xUsd = (balances as unknown as Record<string, TokenBalance>)[def.tokenX]?.usd ?? 0;
+          const yUsd = (balances as unknown as Record<string, TokenBalance>)[def.tokenY]?.usd ?? 0;
           capUsd = Math.max(xUsd, yUsd);
         } else {
           // Check if user has any token that could be swapped
@@ -783,6 +783,7 @@ async function getYieldOptions(
           apy_pct: round(bp.apr24h, 2), daily_usd: d, monthly_usd: round(d * 30, 2),
           gas_to_enter_stx: 0.05, swap_cost_note: swapNote,
           note: `Fee-based LP. TVL: $${Math.round(bp.tvlUsd).toLocaleString()}.`,
+          ytg_ratio: 0, ytg_profitable: false,
         });
       }
     }
