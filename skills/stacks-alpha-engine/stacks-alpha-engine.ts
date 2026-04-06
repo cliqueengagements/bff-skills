@@ -192,6 +192,19 @@ interface EngineResult {
 
 interface BitflowPoolData { poolId: string; tvlUsd: number; volumeUsd1d: number; apr24h: number; tokens?: { tokenX: { priceUsd: number; decimals: number }; tokenY: { priceUsd: number; decimals: number } } }
 
+// == Bitflow pools cache (fetched once per run, reused across scout/yield/guardian) ==
+let _poolsCache: BitflowPoolData[] | null = null;
+let _poolsCacheTs = 0;
+const POOLS_CACHE_TTL_MS = 60_000; // 1 minute
+
+async function fetchBitflowPools(): Promise<BitflowPoolData[]> {
+  if (_poolsCache && (Date.now() - _poolsCacheTs) < POOLS_CACHE_TTL_MS) return _poolsCache;
+  const pd = await fetchJson<{ data?: BitflowPoolData[] }>(`${BITFLOW_API}/api/app/v1/pools`);
+  _poolsCache = pd.data ?? [];
+  _poolsCacheTs = Date.now();
+  return _poolsCache;
+}
+
 // == Fetch helpers =============================================================
 async function fetchJson<T>(url: string, opts: RequestInit = {}): Promise<T> {
   const controller = new AbortController();
@@ -618,8 +631,7 @@ async function scoutHodlmm(wallet: string): Promise<{ positions: HodlmmPositions
   const userPools: HodlmmUserPool[] = [];
   let bitflowPools: BitflowPoolData[] | null = null;
   try {
-    const pd = await fetchJson<{ data?: BitflowPoolData[] }>(`${BITFLOW_API}/api/app/v1/pools`);
-    bitflowPools = pd.data ?? null;
+    bitflowPools = await fetchBitflowPools();
   } catch { /* unavailable */ }
 
   for (const pool of HODLMM_POOLS) {
@@ -641,7 +653,11 @@ async function scoutHodlmm(wallet: string): Promise<{ positions: HodlmmPositions
 
       let estimatedValueUsd: number | null = null;
       const mp = bitflowPools?.find(p => p.poolId === `dlmm_${pool.id}`);
-      if (mp && totalSupply > 0n) estimatedValueUsd = round(Number(dlpShares) / Number(totalSupply) * mp.tvlUsd, 2);
+      if (mp && totalSupply > 0n) {
+        // BigInt division first to avoid precision loss on large 128-bit uints
+        const scaledRatio = (dlpShares * 1_000_000n) / totalSupply;
+        estimatedValueUsd = round(Number(scaledRatio) / 1_000_000 * mp.tvlUsd, 2);
+      }
 
       sources.push(`hodlmm-pool-${pool.id}`);
       userPools.push({
@@ -739,10 +755,10 @@ async function getYieldOptions(
 
   // HODLMM pools
   try {
-    const pd = await fetchJson<{ data?: BitflowPoolData[] }>(`${BITFLOW_API}/api/app/v1/pools`);
-    if (pd.data) {
+    const pools = await fetchBitflowPools();
+    if (pools.length > 0) {
       sources.push("bitflow-hodlmm-apr");
-      for (const bp of pd.data) {
+      for (const bp of pools) {
         if (bp.apr24h <= 0) continue;
         const def = HODLMM_POOLS.find(p => `dlmm_${p.id}` === bp.poolId);
         if (!def) continue;
@@ -934,9 +950,9 @@ async function checkGuardian(scout: ScoutResult): Promise<GuardianResult> {
   // 2. Slippage check (HODLMM active bin vs market price)
   let slippagePct = 0;
   let slippageOk = true;
+  const guardianPools = await fetchBitflowPools().catch(() => [] as BitflowPoolData[]);
   try {
-    const pd = await fetchJson<{ data?: BitflowPoolData[] }>(`${BITFLOW_API}/api/app/v1/pools`);
-    const dlmm1 = pd.data?.find(p => p.poolId === "dlmm_1");
+    const dlmm1 = guardianPools.find(p => p.poolId === "dlmm_1");
     if (dlmm1?.tokens) {
       const pool1 = HODLMM_POOLS[0];
       const abr = await callReadOnly(pool1.contract, "get-active-bin-id", []);
@@ -962,8 +978,7 @@ async function checkGuardian(scout: ScoutResult): Promise<GuardianResult> {
   let volumeUsd = 0;
   let volumeOk = true;
   try {
-    const pd = await fetchJson<{ data?: BitflowPoolData[] }>(`${BITFLOW_API}/api/app/v1/pools`);
-    const dlmm1 = pd.data?.find(p => p.poolId === "dlmm_1");
+    const dlmm1 = guardianPools.find(p => p.poolId === "dlmm_1");
     volumeUsd = dlmm1?.volumeUsd1d ?? 0;
     volumeOk = volumeUsd >= MIN_24H_VOLUME_USD;
     if (!volumeOk) refusals.push(`24h volume $${Math.round(volumeUsd)} < $${MIN_24H_VOLUME_USD} minimum`);
@@ -1065,6 +1080,11 @@ function buildDeployInstructions(protocol: Protocol, amount: number, token: stri
             contractName: "staking-v1",
             functionName: "stake",
             functionArgs: [{ type: "uint", value: "received_amount" }],
+            postConditions: [{
+              type: "ft", principal: wallet,
+              asset: USDH_TOKEN, assetName: "usdh-token",
+              conditionCode: "lte", amount: "received_amount",
+            }],
           },
           description: "Step 2: Stake received USDh into Hermetica sUSDh",
         });
@@ -1110,6 +1130,11 @@ function buildDeployInstructions(protocol: Protocol, amount: number, token: stri
               { type: "uint", value: "received_amount" },
               { type: "principal", value: wallet },
             ],
+            postConditions: [{
+              type: "ft", principal: wallet,
+              asset: AEUSDC_TOKEN, assetName: "bridged-usdc",
+              conditionCode: "lte", amount: "received_amount",
+            }],
           },
           description: "Step 2: Deposit received aeUSDC to Granite lending pool",
         });
@@ -1175,17 +1200,26 @@ function buildWithdrawInstructions(protocol: Protocol, scout: ScoutResult): Exec
       ];
     }
 
-    case "granite":
+    case "granite": {
+      // Post-condition: contract sends aeUSDC back to wallet, capped at wallet's deposit + interest
+      // Use aeUSDC balance upper bound — Granite withdraw(0) returns all shares as aeUSDC
+      const aeBalance = Math.floor(scout.balances.aeusdc.amount * 1e6);
+      const expectedAeusdc = String(Math.max(aeBalance * 2, 1_000_000_000)); // 2x current or 1000 aeUSDC cap
       return [{
         tool: "call_contract",
         params: {
           contractAddress: "SP26NGV9AFZBX7XBDBS2C7EC7FCPSAV9PKREQNMVS",
           contractName: "liquidity-provider-v1", functionName: "withdraw",
           functionArgs: [{ type: "uint", value: 0 }, { type: "principal", value: wallet }],
-          postConditionMode: "allow",
+          postConditions: [{
+            type: "ft", principal: "SP26NGV9AFZBX7XBDBS2C7EC7FCPSAV9PKREQNMVS.liquidity-provider-v1",
+            asset: AEUSDC_TOKEN, assetName: "bridged-usdc",
+            conditionCode: "lte", amount: expectedAeusdc,
+          }],
         },
         description: "Withdraw all aeUSDC from Granite lending pool",
       }];
+    }
 
     case "hodlmm": {
       const pools = scout.positions.hodlmm.pools;
@@ -1268,9 +1302,21 @@ async function _runPipeline(wallet: string, command: string, opts: Record<string
   // Step 2: Reserve check
   const reserve = await checkReserve();
 
+  // --confirm gate for emergency too
+  const confirmed = opts.confirm === "true" || opts.confirm === "";
+
   // Emergency bypasses guardian
   if (command === "emergency") {
     const instructions = buildEmergencyInstructions(scout);
+    if (!confirmed) {
+      return {
+        status: "preview", command, scout, reserve,
+        action: {
+          description: `[DRY RUN] EMERGENCY EXIT: ${instructions.length} operations — add --confirm to execute`,
+          details: { instructions },
+        },
+      };
+    }
     return {
       status: "ok", command, scout, reserve,
       action: {
@@ -1312,24 +1358,10 @@ async function _runPipeline(wallet: string, command: string, opts: Record<string
 
   switch (command) {
     case "deploy": {
+      // Input already validated in Step 0 above
       const protocol = opts.protocol as Protocol;
       const token = opts.token ?? inferToken(protocol);
       const amount = parseInt(opts.amount ?? "0", 10);
-      if (!protocol || !["zest", "hermetica", "granite", "hodlmm"].includes(protocol)) {
-        return { status: "error", command, error: "Invalid protocol. Use: zest, hermetica, granite, hodlmm" };
-      }
-      if (amount <= 0) return { status: "error", command, error: "Amount must be > 0" };
-
-      // Validate token matches protocol
-      const validTokens: Record<Protocol, string[]> = {
-        zest: ["sbtc"],
-        hermetica: ["usdh", "sbtc", "usdcx", "stx"],
-        granite: ["aeusdc", "usdcx"],
-        hodlmm: ["sbtc", "stx", "usdcx", "usdh", "aeusdc"],
-      };
-      if (!validTokens[protocol].includes(token)) {
-        return { status: "error", command, error: `${protocol} does not accept ${token}. Valid: ${validTokens[protocol].join(", ")}` };
-      }
 
       // Check 0% APY
       const targetOpt = scout.options.find(o => o.protocol.toLowerCase() === protocol);
@@ -1348,10 +1380,8 @@ async function _runPipeline(wallet: string, command: string, opts: Record<string
     }
 
     case "withdraw": {
+      // Input already validated in Step 0 above
       const protocol = opts.protocol as Protocol;
-      if (!protocol || !["zest", "hermetica", "granite", "hodlmm"].includes(protocol)) {
-        return { status: "error", command, error: "Invalid protocol. Use: zest, hermetica, granite, hodlmm" };
-      }
       instructions = buildWithdrawInstructions(protocol, scout);
       description = `Withdraw from ${protocol}`;
       break;
@@ -1383,10 +1413,9 @@ async function _runPipeline(wallet: string, command: string, opts: Record<string
     }
 
     case "migrate": {
+      // Input already validated in Step 0 above
       const from = opts.from as Protocol;
       const to = opts.to as Protocol;
-      if (!from || !to || from === to) return { status: "error", command, error: "Specify --from and --to (different protocols)" };
-
       instructions.push(...buildWithdrawInstructions(from, scout));
       const token = opts.token ?? inferToken(to);
       const amount = opts.amount ? parseInt(opts.amount, 10) : Math.floor(scout.balances.sbtc.amount * 1e8);
@@ -1394,6 +1423,16 @@ async function _runPipeline(wallet: string, command: string, opts: Record<string
       description = `Migrate from ${from} to ${to}`;
       break;
     }
+  }
+
+  if (!confirmed) {
+    return {
+      status: "preview", command, scout, reserve, guardian,
+      action: {
+        description: `[DRY RUN] ${description} — add --confirm to execute`,
+        details: { instructions, instruction_count: instructions.length },
+      },
+    };
   }
 
   return {
@@ -1447,8 +1486,8 @@ async function runDoctor(): Promise<void> {
 
   // 5. Bitflow HODLMM API
   try {
-    const pd = await fetchJson<{ data?: BitflowPoolData[] }>(`${BITFLOW_API}/api/app/v1/pools`);
-    checks.push({ name: "Bitflow HODLMM API", ok: (pd.data?.length ?? 0) > 0, detail: `${pd.data?.length ?? 0} pools` });
+    const pools = await fetchBitflowPools();
+    checks.push({ name: "Bitflow HODLMM API", ok: pools.length > 0, detail: `${pools.length} pools` });
   } catch (e: unknown) { checks.push({ name: "Bitflow HODLMM API", ok: false, detail: e instanceof Error ? e.message : String(e) }); }
 
   // 6. mempool.space
@@ -1717,6 +1756,7 @@ program
   .requiredOption("--amount <value>", "Amount in smallest unit (sats for sBTC, micro for stablecoins)")
   .option("--token <symbol>", "Token to deploy (default: inferred from protocol)")
   .option("--force", "Override 0% APY refusal")
+  .option("--confirm", "Execute the transaction (without this flag, outputs a dry-run preview)")
   .action(async (opts: Record<string, string>) => {
     const result = await runPipeline(opts.wallet, "deploy", opts);
     console.log(JSON.stringify(result, null, 2));
@@ -1728,6 +1768,7 @@ program
   .description("Withdraw from a protocol (runs full safety pipeline first)")
   .requiredOption("--wallet <address>", "Stacks wallet address (SP...)")
   .requiredOption("--protocol <name>", "Source protocol: zest, hermetica, granite, hodlmm")
+  .option("--confirm", "Execute the transaction (without this flag, outputs a dry-run preview)")
   .action(async (opts: Record<string, string>) => {
     const result = await runPipeline(opts.wallet, "withdraw", opts);
     console.log(JSON.stringify(result, null, 2));
@@ -1739,6 +1780,7 @@ program
   .description("Withdraw out-of-range HODLMM bins and re-add centered on active bin")
   .requiredOption("--wallet <address>", "Stacks wallet address (SP...)")
   .option("--pool-id <id>", "HODLMM pool ID (default: dlmm_1)", "dlmm_1")
+  .option("--confirm", "Execute the transaction (without this flag, outputs a dry-run preview)")
   .action(async (opts: Record<string, string>) => {
     const result = await runPipeline(opts.wallet, "rebalance", opts);
     console.log(JSON.stringify(result, null, 2));
@@ -1753,6 +1795,7 @@ program
   .requiredOption("--to <protocol>", "Target protocol: zest, hermetica, granite, hodlmm")
   .option("--token <symbol>", "Token to deploy into target (default: inferred)")
   .option("--amount <value>", "Amount in smallest unit (default: all)")
+  .option("--confirm", "Execute the transaction (without this flag, outputs a dry-run preview)")
   .action(async (opts: Record<string, string>) => {
     const result = await runPipeline(opts.wallet, "migrate", opts);
     console.log(JSON.stringify(result, null, 2));
@@ -1763,6 +1806,7 @@ program
   .command("emergency")
   .description("Emergency withdrawal from ALL protocols (bypasses guardian gates)")
   .requiredOption("--wallet <address>", "Stacks wallet address (SP...)")
+  .option("--confirm", "Execute the transaction (without this flag, outputs a dry-run preview)")
   .action(async (opts: Record<string, string>) => {
     const result = await runPipeline(opts.wallet, "emergency", opts);
     console.log(JSON.stringify(result, null, 2));

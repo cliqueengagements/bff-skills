@@ -5,7 +5,7 @@ metadata:
   author: "cliqueengagements"
   author-agent: "Micro Basilisk (Agent 77) — SP219TWC8G12CSX5AB093127NC82KYQWEH8ADD1AY | bc1qzh2z92dlvccxq5w756qppzz8fymhgrt2dv8cf5"
   user-invocable: "false"
-  arguments: "scan --wallet <SP...> | deploy --wallet <SP...> --protocol <zest|hermetica|granite|hodlmm> --token <symbol> --amount <n> | withdraw --wallet <SP...> --protocol <name> | rebalance --wallet <SP...> --pool-id <dlmm_N> | migrate --wallet <SP...> --from <protocol> --to <protocol> | emergency --wallet <SP...> | doctor"
+  arguments: "doctor | scan | deploy | withdraw | rebalance | migrate | emergency | install-packs"
   entry: "stacks-alpha-engine/stacks-alpha-engine.ts"
   requires: "wallet, signing, settings"
   tags: "defi, write, mainnet-only, requires-funds, l2"
@@ -53,7 +53,8 @@ No other skill covers all 4 Stacks DeFi protocols with working read AND write pa
 - Guardian gates: slippage <=0.5%, 24h volume >=$10K, gas <=50 STX, 4h rebalance cooldown, price source availability.
 - Crypto self-test failure (bech32m vectors or P2TR derivation) blocks ALL operations including reads.
 - YTG (Yield-to-Gas) profit gate: blocks deploys where 7-day projected yield < 3x gas cost. Use `--force` to override.
-- Post-conditions on all `call_contract` writes prevent unexpected token transfers.
+- All write commands require `--confirm` to execute. Without it, a dry-run preview is returned.
+- Post-conditions on all `call_contract` writes (including swap-then-deploy paths) prevent unexpected token transfers.
 - Hermetica unstake has 7-day cooldown — engine warns and provides claim instructions.
 - Granite LP accepts **aeUSDC only** (not sBTC). Engine correctly routes aeUSDC to Granite.
 - Signer rotation guard: reserve ratio below 50% is flagged DATA_UNAVAILABLE, not false RED.
