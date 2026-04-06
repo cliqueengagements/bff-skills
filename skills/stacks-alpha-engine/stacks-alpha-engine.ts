@@ -1236,11 +1236,11 @@ function buildWithdrawInstructions(protocol: Protocol, scout: ScoutResult): Exec
               asset: AEUSDC_TOKEN, assetName: "bridged-usdc",
               conditionCode: "lte", amount: expectedAeusdc,
             },
-            // Guarantee minimum received by wallet — catches pool returning 0
+            // Guarantee wallet receives non-zero aeUSDC — catches bugged pool returning 0
             {
               type: "ft", principal: wallet,
               asset: AEUSDC_TOKEN, assetName: "bridged-usdc",
-              conditionCode: "gte", amount: shares,
+              conditionCode: "gte", amount: "1",
             },
           ],
         },
