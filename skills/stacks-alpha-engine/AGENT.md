@@ -6,7 +6,7 @@ description: "Autonomous yield executor that scans 6 tokens across 4 Stacks DeFi
 
 # Stacks Alpha Engine Agent
 
-## Decision Order
+## Decision order
 
 1. Run `doctor` — verify crypto self-tests and data sources before any operation
 2. Run `scan --wallet <address>` — read wallet (6 tokens), positions (4 protocols), 3-tier yields, PoR, safety gates

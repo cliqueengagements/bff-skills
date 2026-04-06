@@ -8,7 +8,7 @@ metadata:
   arguments: "scan --wallet <SP...> | deploy --wallet <SP...> --protocol <zest|hermetica|granite|hodlmm> --token <symbol> --amount <n> | withdraw --wallet <SP...> --protocol <name> | rebalance --wallet <SP...> --pool-id <dlmm_N> | migrate --wallet <SP...> --from <protocol> --to <protocol> | emergency --wallet <SP...> | doctor"
   entry: "stacks-alpha-engine/stacks-alpha-engine.ts"
   requires: "wallet, signing, settings"
-  tags: "defi, yield, hodlmm, zest, hermetica, granite, sbtc, proof-of-reserve, rebalance, executor, multi-protocol"
+  tags: "defi, write, mainnet-only, requires-funds, l2"
 ---
 
 # Stacks Alpha Engine
@@ -134,7 +134,7 @@ All 4 protocols have **zero trait_reference** requirements in their write paths.
 | Zest rate drops | Scout: live utilization read | `zest_withdraw` + redeploy |
 | Signer key rotation | PoR: ratio < 50% | DATA_UNAVAILABLE flag |
 
-## Known Limitations
+## Known constraints
 
 ### Granite Borrower Path (Blocked)
 Granite `borrower-v1.add-collateral` requires `trait_reference` — blocked by MCP. The engine uses the **LP deposit path** (aeUSDC supply) which works without trait_reference.
