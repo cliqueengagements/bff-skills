@@ -1227,6 +1227,32 @@ async function runPipeline(wallet: string, command: string, opts: Record<string,
 }
 
 async function _runPipeline(wallet: string, command: string, opts: Record<string, string>): Promise<Omit<EngineResult, "disclaimer">> {
+  // Step 0: Input validation (before spending API calls)
+  if (command === "deploy") {
+    const protocol = opts.protocol;
+    if (!protocol || !["zest", "hermetica", "granite", "hodlmm"].includes(protocol)) {
+      return { status: "error", command, error: "Invalid protocol. Use: zest, hermetica, granite, hodlmm" };
+    }
+    const amount = parseInt(opts.amount ?? "0", 10);
+    if (amount <= 0) return { status: "error", command, error: "Amount must be > 0" };
+    const token = opts.token ?? inferToken(protocol as Protocol);
+    const validTokens: Record<string, string[]> = { zest: ["sbtc"], hermetica: ["usdh", "sbtc", "usdcx", "stx"], granite: ["aeusdc", "usdcx"], hodlmm: ["sbtc", "stx", "usdcx", "usdh", "aeusdc"] };
+    if (!validTokens[protocol].includes(token)) {
+      return { status: "error", command, error: `${protocol} does not accept ${token}. Valid: ${validTokens[protocol].join(", ")}` };
+    }
+  }
+  if (command === "withdraw") {
+    const protocol = opts.protocol;
+    if (!protocol || !["zest", "hermetica", "granite", "hodlmm"].includes(protocol)) {
+      return { status: "error", command, error: "Invalid protocol. Use: zest, hermetica, granite, hodlmm" };
+    }
+  }
+  if (command === "migrate") {
+    if (!opts.from || !opts.to || opts.from === opts.to) {
+      return { status: "error", command, error: "Specify --from and --to (different protocols)" };
+    }
+  }
+
   // Step 1: Scout
   let scout: ScoutResult;
   try {
