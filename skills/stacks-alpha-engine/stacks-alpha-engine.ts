@@ -1594,10 +1594,20 @@ function renderReport(scout: ScoutResult, reserve: ReserveResult, guardian: Guar
     L.push("");
   }
 
-  // Section 5: Best Move
-  L.push("## 5. Best Safe Move");
+  // Section 5: Best Move + YTG Verdict
+  L.push("## 5. Verdict");
   L.push("");
   L.push(`> ${scout.best_move.recommendation}`);
+  L.push("");
+  const profitable = scout.options.filter(o => o.ytg_profitable && o.tier !== "acquire_to_unlock");
+  const unprofitable = scout.options.filter(o => !o.ytg_profitable && o.tier !== "acquire_to_unlock");
+  if (profitable.length > 0 && unprofitable.length > 0) {
+    L.push(`**YTG verdict:** ${profitable.length} option${profitable.length > 1 ? "s" : ""} profitable (yield > 3x gas), ${unprofitable.length} blocked (gas eats yield — hold until capital or APY grows).`);
+  } else if (profitable.length > 0) {
+    L.push(`**YTG verdict:** All ${profitable.length} options are profitable — gas cost is negligible relative to yield.`);
+  } else if (unprofitable.length > 0) {
+    L.push(`**YTG verdict:** No profitable options at current capital. Hold — gas would eat all yield. Accumulate more or wait for higher APY.`);
+  }
   L.push("");
 
   // Section 6: Break Prices
