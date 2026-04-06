@@ -1227,7 +1227,10 @@ async function runPipeline(wallet: string, command: string, opts: Record<string,
 }
 
 async function _runPipeline(wallet: string, command: string, opts: Record<string, string>): Promise<Omit<EngineResult, "disclaimer">> {
-  // Step 0: Input validation (before spending API calls)
+  // Step 0: Input validation — pure string/number checks only.
+  // NOT a safety bypass: the full pipeline (Scout → PoR → Guardian → YTG → Executor)
+  // still runs for every valid write request. This just catches obviously invalid input
+  // (bad protocol name, zero amount, wrong token) before wasting 12+ API calls.
   if (command === "deploy") {
     const protocol = opts.protocol;
     if (!protocol || !["zest", "hermetica", "granite", "hodlmm"].includes(protocol)) {
