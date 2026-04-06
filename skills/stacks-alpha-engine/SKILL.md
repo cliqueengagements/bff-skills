@@ -190,6 +190,19 @@ The sBTC Proof-of-Reserve module derives the signer's Bitcoin P2TR address from 
 10. Granite Protocol (aeUSDC LP params)
 11. HODLMM Pool Contracts
 
+## x402 Paid Endpoints
+
+Stacks Alpha Engine is free to run from the registry. For agents that want instant results without running 12+ API calls, paid x402 endpoints are available:
+
+| Endpoint | What you get | Price | Pays back in |
+|----------|-------------|-------|-------------|
+| `/scan` | Full 7-section report: wallet, positions, 3-tier yields with YTG, PoR, break prices, safety gates | 500 sats | ~5 min of yield difference |
+| `/reserve` | sBTC Proof-of-Reserve check: GREEN/YELLOW/RED signal with reserve ratio | 100 sats | Avoiding one bad trade |
+| `/break-prices` | HODLMM range exit prices + safety buffer | 200 sats | One rebalance save |
+| `/guardian` | 6-gate pre-flight safety check | 100 sats | One blocked bad tx |
+
+All endpoints return the same JSON output as the CLI. x402 protocol shows price before payment — no surprises. Revenue flows to `SP219TWC8G12CSX5AB093127NC82KYQWEH8ADD1AY` (Micro Basilisk, Agent #77).
+
 ## Disclaimers
 
 ### Financial Disclaimer
