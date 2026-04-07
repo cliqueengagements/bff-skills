@@ -50,7 +50,8 @@ No other skill covers all 4 Stacks DeFi protocols with working read AND write pa
 - Every write command runs the full safety pipeline: Scout (read state) -> PoR (verify sBTC backing) -> Guardian (6 gates) -> Executor. No gate can be skipped.
 - PoR RED or DATA_UNAVAILABLE blocks ALL writes and suggests emergency withdrawal.
 - PoR YELLOW blocks all writes (read-only mode).
-- Guardian gates: slippage <=0.5%, 24h volume >=$10K, gas <=50 STX, 4h rebalance cooldown, price source availability.
+- Guardian gates: HODLMM pool-vs-market divergence <=0.5%, 24h volume >=$10K, gas <=50 STX, 4h rebalance cooldown, price source availability.
+- Swap slippage budget (min-received on DLMM swaps): stable→stable 0.5%, volatile 3%. Configurable per-call. These are independent of the guardian divergence gate (which checks a different pool).
 - Crypto self-test failure (bech32m vectors or P2TR derivation) blocks ALL operations including reads.
 - YTG (Yield-to-Gas) profit gate: blocks deploys where 7-day projected yield < 3x gas cost. Use `--force` to override.
 - All write commands require `--confirm` to execute. Without it, a dry-run preview is returned.
@@ -113,7 +114,7 @@ All 4 protocols have **zero trait_reference** requirements in their write paths.
 
 1. **Scout** reads wallet (6 tokens) + 4 protocols + yields + prices + YTG ratios
 2. **Reserve (PoR)** verifies sBTC is fully backed by real BTC
-3. **Guardian** checks 6 gates: slippage (<=0.5%), volume (>=$10K), gas (<=50 STX), cooldown (4h), relay, prices
+3. **Guardian** checks 6 gates: pool-vs-market divergence (<=0.5%), volume (>=$10K), gas (<=50 STX), cooldown (4h), relay, prices
 4. **YTG gate** checks 7d projected yield > 3x gas cost (refuses unprofitable deploys)
 5. All pass -> **Executor** outputs transaction instructions
 6. Any fail -> refuse with specific reasons, no transaction

@@ -1086,10 +1086,18 @@ function getDlmmSwapRoute(tokenIn: string, tokenOut: string): DlmmSwapRoute | nu
   return null;
 }
 
+// Default slippage by pair volatility profile.
+// Stable-stable pairs use tight tolerance; volatile pairs need more room.
+function defaultSlippagePct(route: DlmmSwapRoute): number {
+  const stable = [USDCX_TOKEN, AEUSDC_TOKEN, USDH_TOKEN];
+  const bothStable = stable.includes(route.xToken) && stable.includes(route.yToken);
+  return bothStable ? 0.5 : 3;
+}
+
 // Build a call_contract instruction for a Bitflow DLMM swap.
 // Uses swap-simple-multi with a single swap in the list.
-// Slippage: 2% tolerance on min-received (adjustable).
-function buildDlmmSwapInstruction(route: DlmmSwapRoute, amount: number, slippagePct = 2): ExecuteInstruction {
+function buildDlmmSwapInstruction(route: DlmmSwapRoute, amount: number, slippagePct?: number): ExecuteInstruction {
+  slippagePct = slippagePct ?? defaultSlippagePct(route);
   const minReceived = Math.floor(amount * (1 - slippagePct / 100));
   return {
     tool: "call_contract",
