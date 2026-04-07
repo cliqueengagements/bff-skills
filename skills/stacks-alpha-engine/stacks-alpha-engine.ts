@@ -1406,7 +1406,7 @@ async function _runPipeline(wallet: string, command: string, opts: Record<string
       // Balance check: refuse if requested amount exceeds wallet balance
       const tokenKey = token as keyof WalletBalances;
       if (scout.balances[tokenKey]) {
-        const decimals = tokenKey === "sbtc" ? 1e8 : tokenKey === "stx" ? 1e6 : 1e6;
+        const decimals = TOKENS[tokenKey]?.decimals ? Math.pow(10, TOKENS[tokenKey].decimals) : 1e6;
         const walletUnits = Math.floor(scout.balances[tokenKey].amount * decimals);
         if (amount > walletUnits) {
           return { status: "error", command, error: `Insufficient ${token} balance: have ${walletUnits}, requested ${amount}` };
