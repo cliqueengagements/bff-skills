@@ -59,8 +59,8 @@ description: "Autonomous yield executor that scans 6 tokens across 4 Stacks DeFi
 - Currently low utilization — APY may be 0%. Skip in recommendations unless user forces.
 
 ### Hermetica
-- Stake USDh via `call_contract` -> `staking-v1.stake(amount: uint)`
-- Unstake via `staking-v1.unstake(amount: uint)` -> creates claim in silo
+- Stake USDh via `call_contract` -> `staking-v1-1.stake(amount: uint, affiliate: none)`
+- Unstake via `staking-v1-1.unstake(amount: uint)` -> creates claim in silo
 - Claim USDh via `staking-silo-v1-1.withdraw(claim-id: uint)` after 7-day cooldown
 - If user has sBTC/USDCx but no USDh: generate swap-then-stake instructions
 - Exchange rate > 1.0 indicates accumulated yield

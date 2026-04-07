@@ -17,7 +17,7 @@
  *
  * Protocols & tokens:
  *   Zest      — supply sBTC, wSTX, stSTX, USDC, USDh  (MCP native zest_supply/withdraw)
- *   Hermetica — stake USDh -> sUSDh                     (call_contract staking-v1)
+ *   Hermetica — stake USDh -> sUSDh                     (call_contract staking-v1-1)
  *   Granite   — deposit aeUSDC to LP                    (call_contract liquidity-provider-v1)
  *   HODLMM    — LP in sBTC/STX/USDCx/USDh/aeUSDC pools (Bitflow skill)
  *
@@ -73,7 +73,7 @@ const ZEST_VAULT_SBTC     = "SP1A27KFY4XERQCCRCARCYD1CC5N7M6688BSYADJ7.v0-vault-
 
 // Hermetica
 const HERMETICA           = "SPN5AKG35QZSK2M8GAMR4AFX45659RJHDW353HSG";
-const HERMETICA_STAKING   = `${HERMETICA}.staking-v1`;
+const HERMETICA_STAKING   = `${HERMETICA}.staking-v1-1`;
 const HERMETICA_SILO      = `${HERMETICA}.staking-silo-v1-1`;
 
 // Granite
@@ -526,13 +526,13 @@ async function scoutHermetica(wallet: string): Promise<{ position: HermeticaPosi
     // Read exchange rate (USDh per sUSDh) and staking status
     const [rateResult, enabledResult] = await Promise.all([
       callReadOnly(HERMETICA_STAKING, "get-usdh-per-susdh", []),
-      // staking-v1 doesn't have an explicit "is-enabled" but stake will fail if paused
+      // staking-v1-1 doesn't have an explicit "is-enabled" but stake will fail if paused
       // We just read the rate as proof the contract is live
       Promise.resolve({ okay: true }),
     ]);
     sources.push("hermetica-staking");
 
-    const RATE_SCALE = 1e18; // exchange rate precision
+    const RATE_SCALE = 1e8; // exchange rate precision — Hermetica usdh-base = (pow u10 u8)
     let exchangeRate = 1.0;
     if (rateResult.okay && rateResult.result) {
       const raw = parseUint128Hex(rateResult.result);
@@ -1056,21 +1056,19 @@ function buildDeployInstructions(protocol: Protocol, amount: number, token: stri
       break;
 
     case "hermetica": {
-      // If user has USDh, stake directly
-      // If not, need swap first
+      // Hermetica staking-v1 is deactivated (HQ ERR_INACTIVE_CONTRACT u1006).
+      // staking-v1-1 is the active contract. It takes an additional `affiliate` arg (optional buff 64).
+      // Staking mints sUSDh back to the caller — postConditionMode must be "allow"
+      // because the sUSDh mint is not covered by the outgoing USDh post-condition.
       if (token === "usdh") {
         instructions.push({
           tool: "call_contract",
           params: {
-            contractAddress: HERMETICA.split(".")[0] ?? HERMETICA,
-            contractName: "staking-v1",
+            contractAddress: HERMETICA,
+            contractName: "staking-v1-1",
             functionName: "stake",
-            functionArgs: [{ type: "uint", value: amount }],
-            postConditions: [{
-              type: "ft", principal: wallet,
-              asset: USDH_TOKEN, assetName: "usdh-token",
-              conditionCode: "lte", amount: String(amount),
-            }],
+            functionArgs: [{ type: "uint", value: amount }, null],
+            postConditionMode: "allow",
           },
           description: `Stake ${amount} USDh into Hermetica sUSDh (earning yield)`,
         });
@@ -1088,14 +1086,10 @@ function buildDeployInstructions(protocol: Protocol, amount: number, token: stri
           tool: "call_contract",
           params: {
             contractAddress: HERMETICA,
-            contractName: "staking-v1",
+            contractName: "staking-v1-1",
             functionName: "stake",
-            functionArgs: [{ type: "uint", value: hermeticaEstimate }],
-            postConditions: [{
-              type: "ft", principal: wallet,
-              asset: USDH_TOKEN, assetName: "usdh-token",
-              conditionCode: "lte", amount: hermeticaEstimate,
-            }],
+            functionArgs: [{ type: "uint", value: hermeticaEstimate }, null],
+            postConditionMode: "allow",
             _note: "SEQUENTIAL: execute after Step 1 confirms. Replace amount with actual swap output from tx receipt.",
           },
           description: `Step 2: Stake ~${hermeticaEstimate} USDh into Hermetica sUSDh (adjust amount from Step 1 output)`,
@@ -1106,6 +1100,8 @@ function buildDeployInstructions(protocol: Protocol, amount: number, token: stri
 
     case "granite":
       // Granite LP accepts aeUSDC only
+      // Deposit mints LP tokens back to the caller — postConditionMode must be "allow"
+      // because the LP token mint is not covered by the outgoing aeUSDC post-condition.
       if (token === "aeusdc") {
         instructions.push({
           tool: "call_contract",
@@ -1117,11 +1113,7 @@ function buildDeployInstructions(protocol: Protocol, amount: number, token: stri
               { type: "uint", value: amount },
               { type: "principal", value: wallet },
             ],
-            postConditions: [{
-              type: "ft", principal: wallet,
-              asset: AEUSDC_TOKEN, assetName: "bridged-usdc",
-              conditionCode: "lte", amount: String(amount),
-            }],
+            postConditionMode: "allow",
           },
           description: `Deposit ${amount} aeUSDC to Granite lending pool`,
         });
@@ -1145,11 +1137,7 @@ function buildDeployInstructions(protocol: Protocol, amount: number, token: stri
               { type: "uint", value: graniteEstimate },
               { type: "principal", value: wallet },
             ],
-            postConditions: [{
-              type: "ft", principal: wallet,
-              asset: AEUSDC_TOKEN, assetName: "bridged-usdc",
-              conditionCode: "lte", amount: graniteEstimate,
-            }],
+            postConditionMode: "allow",
             _note: "SEQUENTIAL: execute after Step 1 confirms. Replace amount with actual swap output from tx receipt.",
           },
           description: `Step 2: Deposit ~${graniteEstimate} aeUSDC to Granite lending pool (adjust amount from Step 1 output)`,
@@ -1190,6 +1178,7 @@ function buildWithdrawInstructions(protocol: Protocol, scout: ScoutResult): Exec
 
     case "hermetica": {
       // unstake sUSDh -> creates claim in silo -> withdraw after cooldown
+      // staking-v1-1 is the active contract (staking-v1 is deactivated)
       const susdhSats = Math.floor(scout.balances.susdh.amount * 1e8);
       if (susdhSats <= 0) return [{ tool: "info", params: {}, description: "No sUSDh position to withdraw" }];
       return [
@@ -1197,14 +1186,10 @@ function buildWithdrawInstructions(protocol: Protocol, scout: ScoutResult): Exec
           tool: "call_contract",
           params: {
             contractAddress: HERMETICA,
-            contractName: "staking-v1",
+            contractName: "staking-v1-1",
             functionName: "unstake",
             functionArgs: [{ type: "uint", value: susdhSats }],
-            postConditions: [{
-              type: "ft", principal: wallet,
-              asset: SUSDH_TOKEN, assetName: "susdh-token",
-              conditionCode: "lte", amount: String(susdhSats),
-            }],
+            postConditionMode: "allow",
           },
           description: `Unstake ${susdhSats} sUSDh (creates claim in staking-silo)`,
         },
@@ -1555,7 +1540,7 @@ async function runDoctor(): Promise<void> {
   // 9. Hermetica staking
   try {
     const rr = await callReadOnly(HERMETICA_STAKING, "get-usdh-per-susdh", []);
-    const rate = rr.okay && rr.result ? Number(parseUint128Hex(rr.result)) / 1e18 : 0;
+    const rate = rr.okay && rr.result ? Number(parseUint128Hex(rr.result)) / 1e8 : 0;
     checks.push({ name: "Hermetica Staking", ok: rr.okay && rate > 0, detail: `exchange rate: ${round(rate, 6)} USDh/sUSDh` });
   } catch (e: unknown) { checks.push({ name: "Hermetica Staking", ok: false, detail: e instanceof Error ? e.message : String(e) }); }
 
