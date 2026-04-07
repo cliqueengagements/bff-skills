@@ -382,7 +382,7 @@ async function executeWithdraw(
 
   const result = await broadcastTransaction({ transaction: tx, network: STACKS_MAINNET });
   if ("error" in result && result.error) {
-    throw new Error(`Withdraw broadcast failed: ${result.error} — ${result.reason ?? ""}`);
+    throw new Error(`Withdraw broadcast failed: ${result.error} — ${(result as Record<string, string>).reason ?? ""}`);
   }
   return result.txid as string;
 }
@@ -447,7 +447,7 @@ async function executeDeposit(
 
   const result = await broadcastTransaction({ transaction: tx, network: STACKS_MAINNET });
   if ("error" in result && result.error) {
-    throw new Error(`Deposit broadcast failed: ${result.error} — ${result.reason ?? ""}`);
+    throw new Error(`Deposit broadcast failed: ${result.error} — ${(result as Record<string, string>).reason ?? ""}`);
   }
   return result.txid as string;
 }
@@ -665,7 +665,13 @@ program
         estimated_gas_stx: 0.1,
       };
 
-      // 7. Dry run
+      // 7. Sanity: deposit must have bins
+      if (depositBins.length === 0) {
+        out("blocked", "run", { health }, "Cannot build deposit plan — estimated token amounts are zero");
+        return;
+      }
+
+      // 8. Dry run
       if (!confirmed) {
         out("success", "run", {
           decision: "MOVE_NEEDED",
@@ -677,7 +683,7 @@ program
         return;
       }
 
-      // 8. Execute
+      // 9. Execute
       if (!opts.password) {
         out("blocked", "run", null, "--password required with --confirm");
         return;
@@ -703,7 +709,7 @@ program
       const depositTxId = await executeDeposit(keys.stxPrivateKey, pool, depositBins, activeBin, nonce + 1n);
       log(`Deposit broadcast: ${depositTxId}`);
 
-      // 9. Record cooldown
+      // 10. Record cooldown
       state[poolId] = { last_move_at: new Date().toISOString() };
       saveState(state);
 
