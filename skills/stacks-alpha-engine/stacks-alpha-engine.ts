@@ -81,6 +81,10 @@ const GRANITE_STATE       = "SP35E2BBMDT2Y1HB0NTK139YBGYV3PAPK3WA8BRNA.state-v1"
 const GRANITE_IR          = "SP35E2BBMDT2Y1HB0NTK139YBGYV3PAPK3WA8BRNA.linear-kinked-ir-v1";
 const GRANITE_LP          = "SP26NGV9AFZBX7XBDBS2C7EC7FCPSAV9PKREQNMVS.liquidity-provider-v1";
 
+// Bitflow DLMM swap router
+const DLMM_SWAP_ROUTER    = "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD";
+const DLMM_SWAP_ROUTER_NAME = "dlmm-swap-router-v-1-1";
+
 // HODLMM
 const DLMM_CORE           = "SP1PFR4V08H1RAZXREBGFFQ59WB739XM8VVGTFSEA.dlmm-core-v-1-1";
 const HODLMM_POOLS: PoolDef[] = [
@@ -1047,6 +1051,71 @@ interface ExecuteInstruction {
   description: string;
 }
 
+// -- Bitflow DLMM swap routes ---------------------------------------------------
+// Maps (tokenIn, tokenOut) to the DLMM pool and direction for swap-simple-multi.
+// Each route is a single-hop swap through a known Bitflow DLMM pool.
+interface DlmmSwapRoute {
+  pool: string;     // pool contract principal
+  xToken: string;   // x-token-trait principal (the pool's X token contract)
+  yToken: string;   // y-token-trait principal (the pool's Y token contract)
+  xForY: boolean;   // true = selling X for Y, false = selling Y for X
+}
+
+function getDlmmSwapRoute(tokenIn: string, tokenOut: string): DlmmSwapRoute | null {
+  // USDCx → aeUSDC (pool: aeUSDC/USDCx, selling Y for X)
+  if ((tokenIn === "usdcx" || tokenIn === "stx") && tokenOut === "aeusdc") {
+    return {
+      pool: "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-aeusdc-usdcx-v-1-bps-1",
+      xToken: AEUSDC_TOKEN, yToken: USDCX_TOKEN, xForY: false,
+    };
+  }
+  // USDCx → USDh (pool: USDh/USDCx, selling Y for X)
+  if ((tokenIn === "usdcx" || tokenIn === "stx") && tokenOut === "usdh") {
+    return {
+      pool: "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-usdh-usdcx-v-1-bps-1",
+      xToken: USDH_TOKEN, yToken: USDCX_TOKEN, xForY: false,
+    };
+  }
+  // sBTC → USDCx (pool: sBTC/USDCx 10bps, selling X for Y)
+  if (tokenIn === "sbtc" && tokenOut === "usdcx") {
+    return {
+      pool: "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10",
+      xToken: SBTC_TOKEN, yToken: USDCX_TOKEN, xForY: true,
+    };
+  }
+  return null;
+}
+
+// Build a call_contract instruction for a Bitflow DLMM swap.
+// Uses swap-simple-multi with a single swap in the list.
+// Slippage: 2% tolerance on min-received (adjustable).
+function buildDlmmSwapInstruction(route: DlmmSwapRoute, amount: number, slippagePct = 2): ExecuteInstruction {
+  const minReceived = Math.floor(amount * (1 - slippagePct / 100));
+  return {
+    tool: "call_contract",
+    params: {
+      contractAddress: DLMM_SWAP_ROUTER,
+      contractName: DLMM_SWAP_ROUTER_NAME,
+      functionName: "swap-simple-multi",
+      functionArgs: [{
+        type: "list", value: [{
+          type: "tuple", value: {
+            amount: { type: "uint", value: String(amount) },
+            "max-steps": { type: "uint", value: "6" },
+            "min-received": { type: "uint", value: String(minReceived) },
+            "pool-trait": { type: "principal", value: route.pool },
+            "x-for-y": { type: "bool", value: route.xForY },
+            "x-token-trait": { type: "principal", value: route.xToken },
+            "y-token-trait": { type: "principal", value: route.yToken },
+          },
+        }],
+      }],
+      postConditionMode: "allow",
+    },
+    description: `Swap ${amount} via Bitflow DLMM (${route.xForY ? "X→Y" : "Y→X"}, min-received: ${minReceived}, ${slippagePct}% slippage)`,
+  };
+}
+
 function buildDeployInstructions(protocol: Protocol, amount: number, token: string, scout: ScoutResult): ExecuteInstruction[] {
   const instructions: ExecuteInstruction[] = [];
   const wallet = scout.wallet;
@@ -1078,12 +1147,13 @@ function buildDeployInstructions(protocol: Protocol, amount: number, token: stri
           description: `Stake ${amount} USDh into Hermetica sUSDh (earning yield)`,
         });
       } else {
-        // Need to swap to USDh first
-        instructions.push({
-          tool: "bitflow:bitflow",
-          params: { action: "swap", tokenIn: token, tokenOut: "usdh", amount: String(amount) },
-          description: `Step 1: Swap ${amount} ${token} -> USDh on Bitflow`,
-        });
+        // Need to swap to USDh first via Bitflow DLMM router
+        const swapRoute = getDlmmSwapRoute(token, "usdh");
+        if (!swapRoute) {
+          instructions.push({ tool: "info", params: {}, description: `No DLMM swap route from ${token} to USDh. Acquire USDh manually.` });
+          break;
+        }
+        instructions.push(buildDlmmSwapInstruction(swapRoute, amount));
         // Step 2 amount depends on Step 1 swap output — use input amount as estimate
         // Agent must read swap tx result and substitute actual received amount before executing
         const hermeticaEstimate = String(amount);
@@ -1123,12 +1193,13 @@ function buildDeployInstructions(protocol: Protocol, amount: number, token: stri
           description: `Deposit ${amount} aeUSDC to Granite lending pool`,
         });
       } else {
-        // Need swap to aeUSDC first
-        instructions.push({
-          tool: "bitflow:bitflow",
-          params: { action: "swap", tokenIn: token, tokenOut: "aeusdc", amount: String(amount) },
-          description: `Step 1: Swap ${amount} ${token} -> aeUSDC on Bitflow`,
-        });
+        // Need swap to aeUSDC first via Bitflow DLMM router
+        const swapRoute = getDlmmSwapRoute(token, "aeusdc");
+        if (!swapRoute) {
+          instructions.push({ tool: "info", params: {}, description: `No DLMM swap route from ${token} to aeUSDC. Acquire aeUSDC manually.` });
+          break;
+        }
+        instructions.push(buildDlmmSwapInstruction(swapRoute, amount));
         // Step 2 amount depends on Step 1 swap output — use input amount as estimate
         // Agent must read swap tx result and substitute actual received amount before executing
         const graniteEstimate = String(amount);
