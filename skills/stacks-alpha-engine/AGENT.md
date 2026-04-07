@@ -68,7 +68,7 @@ description: "Autonomous yield executor that scans 6 tokens across 4 Stacks DeFi
 ### Granite
 - **Accepts aeUSDC only** (NOT sBTC, NOT USDCx)
 - Deposit via `call_contract` -> `liquidity-provider-v1.deposit(assets: uint, recipient: principal)`
-- Withdraw via `liquidity-provider-v1.withdraw(assets: uint, recipient: principal)`
+- Withdraw via `liquidity-provider-v1.redeem(shares: uint, recipient: principal)` (ERC-4626 shares, not assets)
 - If user has USDCx but no aeUSDC: generate DLMM swap + deposit instructions (both `call_contract`)
 - Borrower path (add-collateral) is **blocked** by trait_reference — do not attempt
 
