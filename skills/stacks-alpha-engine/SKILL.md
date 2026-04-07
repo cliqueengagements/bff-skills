@@ -22,7 +22,7 @@ Cross-protocol yield executor covering **all 4 major Stacks DeFi protocols** —
 | Protocol | Token(s) | Deposit | Withdraw | Method |
 |----------|---------|---------|----------|--------|
 | Zest v2 | sBTC, wSTX, stSTX, USDC, USDh | `zest_supply` | `zest_withdraw` | MCP native |
-| Hermetica | USDh -> sUSDh | `staking-v1.stake` | `staking-v1.unstake` + `silo.withdraw` | call_contract |
+| Hermetica | USDh -> sUSDh | `staking-v1-1.stake(amount, affiliate)` | `staking-v1-1.unstake` + `silo.withdraw` | call_contract |
 | Granite | aeUSDC | `liquidity-provider-v1.deposit` | `.redeem` (ERC-4626 shares) | call_contract |
 | HODLMM | sBTC, STX, USDCx, USDh, aeUSDC (per pool) | `add-liquidity-simple` | `withdraw-liquidity-simple` | Bitflow skill |
 
@@ -41,9 +41,9 @@ No other skill covers all 4 Stacks DeFi protocols with working read AND write pa
 ## On-chain proof
 
 - **Zest sBTC supply**: [txid b8ec03c3ba85c40840cdc933b61a14faf2a9516e1ce1314d9768228f3328803f](https://explorer.hiro.so/txid/b8ec03c3ba85c40840cdc933b61a14faf2a9516e1ce1314d9768228f3328803f?chain=mainnet) — 14,336 zsBTC shares received (block 7,495,066)
-- **Hermetica staking**: Proven in PR #56 (hermetica-yield-rotator, Day 4 winner) — staking-v1.stake verified on-chain
-- **HODLMM liquidity**: Proven in PR #141 (hodlmm-rebalance-arbiter) — add-liquidity-simple verified on-chain
-- **Granite aeUSDC LP**: deposit/withdraw use plain (uint, principal) args — no trait_reference needed
+- **Hermetica staking**: USDh stake via `staking-v1-1.stake` — [`e8b2213d...`](https://explorer.hiro.so/txid/e8b2213d39faf2e9ccfe52bc3cbe33885303aa01c63f93badd3e8a41900a2ecf?chain=mainnet) (block 7,512,730)
+- **Granite aeUSDC deposit**: `liquidity-provider-v1.deposit` — [`205bf3f1...`](https://explorer.hiro.so/txid/205bf3f135c5f1cddd8323c1a1a054f3a63ac81904c4244a763b0ce4b26c3352?chain=mainnet) (block 7,512,722)
+- **HODLMM add-liquidity**: [`f2ffb41e...`](https://explorer.hiro.so/txid/f2ffb41e1f29a5c5ee5fa0df628a700e21bf14a4aabbd334b5f49b98bab9e315?chain=mainnet) — dlmm-liquidity-router (block 7,423,687)
 
 ## Safety notes
 
@@ -103,7 +103,7 @@ All commands output JSON to stdout:
 | Protocol | Deposit | Withdraw | Token | Method |
 |----------|---------|----------|-------|--------|
 | Zest v2 | `zest_supply` | `zest_withdraw` | sBTC | MCP native |
-| Hermetica | `staking-v1.stake(uint)` | `staking-v1.unstake(uint)` + `silo-v1-1.withdraw(uint)` | USDh/sUSDh | call_contract |
+| Hermetica | `staking-v1-1.stake(uint, optional buff)` | `staking-v1-1.unstake(uint)` + `silo-v1-1.withdraw(uint)` | USDh/sUSDh | call_contract |
 | Granite | `lp-v1.deposit(assets, principal)` | `lp-v1.redeem(shares, principal)` | aeUSDC | call_contract |
 | HODLMM | `add-liquidity-simple` | `withdraw-liquidity-simple` | per pool pair | Bitflow skill |
 
@@ -133,7 +133,7 @@ All 4 protocols have **zero trait_reference** requirements in their write paths.
 |------|-----------|-----------|
 | HODLMM out of range | Guardian: active bin vs user bins | `withdraw-liquidity-simple` |
 | sBTC peg break | PoR: reserve ratio < 99.5% | Withdraw all 4 protocols |
-| Hermetica unstake | Manual | `staking-v1.unstake` + 7-day claim |
+| Hermetica unstake | Manual | `staking-v1-1.unstake` + 7-day claim |
 | Zest rate drops | Scout: live utilization read | `zest_withdraw` + redeploy |
 | Signer key rotation | PoR: ratio < 50% | DATA_UNAVAILABLE flag |
 
@@ -160,7 +160,7 @@ Unstaking sUSDh creates a claim. USDh is available after 7-day cooldown via `sta
 | Bitflow HODLMM API | Pool APR, TVL, volume, token prices |
 | mempool.space | BTC balance at signer P2TR address |
 | Zest v2 Vault | Supply position, utilization, interest rate |
-| Hermetica staking-v1 | Exchange rate (USDh/sUSDh), staking status |
+| Hermetica staking-v1-1 | Exchange rate (USDh/sUSDh), staking status |
 | Granite state-v1 | LP params, IR params, user position, utilization |
 | HODLMM Pool Contracts | User bins, balances, active bin (8 pools) |
 | sbtc-registry | Signer aggregate pubkey |
