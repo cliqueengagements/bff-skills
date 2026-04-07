@@ -731,10 +731,12 @@ async function getYieldOptions(
 
   // Hermetica USDh staking
   if (hermetica.staking_enabled) {
-    const apy = hermetica.apy_estimate_pct > 0 ? hermetica.apy_estimate_pct : 5.0; // fallback estimate
+    const apyRaw = hermetica.apy_estimate_pct;
+    const apy = apyRaw > 0 ? apyRaw : 5.0; // estimated — no live exchange rate data
     if (balances.usdh.amount > 0) {
       const d = dailyUsd(balances.usdh.usd, apy);
-      options.push({ tier: "deploy_now", protocol: "Hermetica", pool: "USDh Staking (sUSDh)", token_needed: "USDh", apy_pct: apy, daily_usd: d, monthly_usd: round(d * 30, 2), gas_to_enter_stx: 0.02, swap_cost_note: null, note: `Stake USDh -> sUSDh. Rate: ${hermetica.exchange_rate} USDh/sUSDh. 7-day unstake cooldown.`, ytg_ratio: 0, ytg_profitable: false });
+      const apyNote = apyRaw > 0 ? "" : " (estimated — no live rate data)";
+      options.push({ tier: "deploy_now", protocol: "Hermetica", pool: "USDh Staking (sUSDh)", token_needed: "USDh", apy_pct: apy, daily_usd: d, monthly_usd: round(d * 30, 2), gas_to_enter_stx: 0.02, swap_cost_note: null, note: `Stake USDh -> sUSDh. Rate: ${hermetica.exchange_rate} USDh/sUSDh. 7-day unstake cooldown.${apyNote}`, ytg_ratio: 0, ytg_profitable: false });
     } else if (balances.sbtc.amount > 0 || balances.usdcx.amount > 0) {
       // Swap path available
       const swapFrom = balances.sbtc.amount > 0 ? "sBTC" : "USDCx";
@@ -1299,7 +1301,7 @@ async function _runPipeline(wallet: string, command: string, opts: Record<string
       return { status: "error", command, error: "Invalid protocol. Use: zest, hermetica, granite, hodlmm" };
     }
     const amount = parseInt(opts.amount ?? "0", 10);
-    if (amount <= 0) return { status: "error", command, error: "Amount must be > 0" };
+    if (isNaN(amount) || amount <= 0) return { status: "error", command, error: "Amount must be a positive number" };
     const token = opts.token ?? inferToken(protocol as Protocol);
     const validTokens: Record<string, string[]> = { zest: ["sbtc"], hermetica: ["usdh", "sbtc", "usdcx", "stx"], granite: ["aeusdc", "usdcx"], hodlmm: ["sbtc", "stx", "usdcx", "usdh", "aeusdc"] };
     if (!validTokens[protocol].includes(token)) {
@@ -1401,6 +1403,16 @@ async function _runPipeline(wallet: string, command: string, opts: Record<string
         return { status: "refused", command, scout, reserve, guardian, refusal_reasons: [`YTG gate: 7d yield ($${round(targetOpt.daily_usd * 7, 4)}) < 3x gas cost. Ratio: ${targetOpt.ytg_ratio}x. Use --force to override.`] };
       }
 
+      // Balance check: refuse if requested amount exceeds wallet balance
+      const tokenKey = token as keyof WalletBalances;
+      if (scout.balances[tokenKey]) {
+        const decimals = tokenKey === "sbtc" ? 1e8 : tokenKey === "stx" ? 1e6 : 1e6;
+        const walletUnits = Math.floor(scout.balances[tokenKey].amount * decimals);
+        if (amount > walletUnits) {
+          return { status: "error", command, error: `Insufficient ${token} balance: have ${walletUnits}, requested ${amount}` };
+        }
+      }
+
       instructions = buildDeployInstructions(protocol, amount, token, scout);
       description = `Deploy ${amount} ${token} to ${protocol}`;
       break;
@@ -1434,7 +1446,6 @@ async function _runPipeline(wallet: string, command: string, opts: Record<string
         description: `Step 2: Re-add liquidity centered on active bin ${pool.active_bin}`,
       });
 
-      writeState({ ...readState(), last_rebalance_at: new Date().toISOString() });
       description = `Rebalance ${pool.name}: withdraw + re-add around bin ${pool.active_bin}`;
       break;
     }
@@ -1445,7 +1456,8 @@ async function _runPipeline(wallet: string, command: string, opts: Record<string
       const to = opts.to as Protocol;
       instructions.push(...buildWithdrawInstructions(from, scout));
       const token = opts.token ?? inferToken(to);
-      const amount = opts.amount ? parseInt(opts.amount, 10) : Math.floor(scout.balances.sbtc.amount * 1e8);
+      const parsedAmt = opts.amount ? parseInt(opts.amount, 10) : NaN;
+      const amount = isNaN(parsedAmt) ? Math.floor(scout.balances.sbtc.amount * 1e8) : parsedAmt;
       instructions.push(...buildDeployInstructions(to, amount, token, scout));
       description = `Migrate from ${from} to ${to}`;
       break;
@@ -1460,6 +1472,11 @@ async function _runPipeline(wallet: string, command: string, opts: Record<string
         details: { instructions, instruction_count: instructions.length },
       },
     };
+  }
+
+  // Stamp rebalance cooldown only on actual execution, never on preview
+  if (command === "rebalance") {
+    writeState({ ...readState(), last_rebalance_at: new Date().toISOString() });
   }
 
   return {
