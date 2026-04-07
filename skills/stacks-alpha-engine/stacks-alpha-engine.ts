@@ -1263,6 +1263,8 @@ function buildWithdrawInstructions(protocol: Protocol, scout: ScoutResult): Exec
     case "hermetica": {
       // unstake sUSDh -> creates claim in silo -> withdraw after cooldown
       // staking-v1-1 is the active contract (staking-v1 is deactivated)
+      // Unstake burns sUSDh and creates a claim — postConditionMode must be "allow"
+      // because the sUSDh burn is not expressible as a sender-side post-condition.
       const susdhSats = Math.floor(scout.balances.susdh.amount * 1e8);
       if (susdhSats <= 0) return [{ tool: "info", params: {}, description: "No sUSDh position to withdraw" }];
       return [

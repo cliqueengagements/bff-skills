@@ -55,7 +55,7 @@ No other skill covers all 4 Stacks DeFi protocols with working read AND write pa
 - Crypto self-test failure (bech32m vectors or P2TR derivation) blocks ALL operations including reads.
 - YTG (Yield-to-Gas) profit gate: blocks deploys where 7-day projected yield < 3x gas cost. Use `--force` to override.
 - All write commands require `--confirm` to execute. Without it, a dry-run preview is returned.
-- Post-conditions on all `call_contract` writes (including swap-then-deploy paths) prevent unexpected token transfers.
+- `postConditionMode: "allow"` on deposit/stake/unstake/swap paths — required because these operations mint LP tokens, sUSDh, or burn sUSDh, which cannot be expressed as sender-side post-conditions. Guardian gates (divergence, volume, gas, cooldown) and `--confirm` dry-run provide the safety layer instead.
 - Hermetica unstake has 7-day cooldown — engine warns and provides claim instructions.
 - Granite LP accepts **aeUSDC only** (not sBTC). Engine correctly routes aeUSDC to Granite.
 - Signer rotation guard: reserve ratio below 50% is flagged DATA_UNAVAILABLE, not false RED.
