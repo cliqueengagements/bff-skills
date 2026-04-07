@@ -539,10 +539,15 @@ async function scoutHermetica(wallet: string): Promise<{ position: HermeticaPosi
       exchangeRate = Number(raw) / RATE_SCALE;
     }
 
-    // Estimate APY from exchange rate drift (rate > 1.0 means yield has accrued)
-    // Simple formula: if rate = 1.05 after ~365 days, APY ~ 5%
-    // We report the rate and let the yield table use Bitflow data for more accuracy
-    const apyEstimate = round(Math.max(0, (exchangeRate - 1.0) * 100), 2);
+    // Annualize APY from exchange rate drift using staking-v1-1 deployment date.
+    // staking-v1-1 deployed at burn block 914980 (Sept 16 2025). The exchange rate
+    // reflects cumulative yield since then — we must annualize, not report raw.
+    const STAKING_V1_1_DEPLOY_TS = 1758041467; // burn_block_time of deploy tx
+    const nowTs = Math.floor(Date.now() / 1000);
+    const daysSinceDeploy = Math.max(1, (nowTs - STAKING_V1_1_DEPLOY_TS) / 86400);
+    const apyEstimate = exchangeRate > 1.0
+      ? round((Math.pow(exchangeRate, 365 / daysSinceDeploy) - 1) * 100, 2)
+      : 0;
 
     // Check user's sUSDh balance from wallet scan (already read in hiroBalance)
     // We just report the rate here; balance comes from the wallet scan
