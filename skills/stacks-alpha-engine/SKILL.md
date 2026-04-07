@@ -143,7 +143,7 @@ All 4 protocols have **zero trait_reference** requirements in their write paths.
 Granite `borrower-v1.add-collateral` requires `trait_reference` — blocked by MCP. The engine uses the **LP deposit path** (aeUSDC supply) which works without trait_reference.
 
 ### Hermetica Minting (Blocked)
-Hermetica `minting-v1.request-mint` requires 4x `trait_reference`. Workaround: swap sBTC -> USDh on Bitflow, then stake. The engine generates swap + stake instructions.
+Hermetica `minting-v1.request-mint` requires 4x `trait_reference`. Workaround: swap via Bitflow DLMM router (`dlmm-swap-router-v-1-1.swap-simple-multi`) then stake. The engine generates executable `call_contract` instructions for both steps.
 
 ### Non-Atomic Multi-Step
 Swap-then-deploy and rebalance operations are 2+ transactions. If tx 1 confirms but tx 2 fails, capital sits safely in wallet.
