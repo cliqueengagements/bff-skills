@@ -37,6 +37,7 @@ description: "Autonomous agent behavior for HODLMM Move-Liquidity & Auto-Rebalan
 - **Do not move in-range positions.** If the position is already in the active bin range, report `IN_RANGE` and take no action. Moving an in-range position wastes gas for zero benefit.
 - **Gas budget: 0.05 STX** estimated for one atomic transaction. If STX balance is below 1 STX, refuse to execute.
 - **Atomic execution.** Uses `move-relative-liquidity-multi` — withdraw from old bins and deposit into new bins in a single on-chain call. Either all bins move or none do.
+- **Contract-level slippage protection.** Each move requires ≥95% DLP shares back (`min-dlp`) and caps liquidity fees at 5% (`max-x-liquidity-fee`, `max-y-liquidity-fee`). The transaction reverts on-chain if either bound is violated.
 
 ## On error
 

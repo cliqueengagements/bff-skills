@@ -33,7 +33,7 @@ This skill closes the loop. The `run` command moves liquidity on demand. The `au
 - **Moves funds.** Liquidity is removed from old bins and placed in new bins. No tokens leave the LP's wallet — they pass through the DLMM liquidity router contract.
 - **Mainnet only.** All contract addresses are mainnet Stacks.
 - **`--confirm` required for `run`.** Without it, `run` outputs a dry-run preview with full plan details. No transaction is broadcast. The `auto` command executes directly (operator opts in by starting it).
-- **postConditionMode: Allow** — HODLMM operations mint and burn DLP tokens in the same transaction, which cannot be expressed as sender-side post-conditions. The `--confirm` gate, cooldown, in-range check, and gas check provide the safety layer.
+- **postConditionMode: Allow** — HODLMM operations mint and burn DLP tokens in the same transaction, which cannot be expressed as sender-side post-conditions. Contract-level slippage protection compensates: each move requires ≥95% DLP shares back (`min-dlp`) and caps liquidity fees at 5% of the amount (`max-x-liquidity-fee`, `max-y-liquidity-fee`). If the contract violates either bound, the transaction reverts on-chain. Additional safety: `--confirm` gate, cooldown, in-range check, and gas check.
 - **4-hour cooldown** between moves on the same pool, enforced in code and persisted to disk.
 
 ## Commands

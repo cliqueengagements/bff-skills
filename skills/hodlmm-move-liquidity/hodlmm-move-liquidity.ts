@@ -26,6 +26,9 @@ const BITFLOW_APP = "https://bff.bitflowapis.finance/api/app/v1";
 const HIRO_API = "https://api.mainnet.hiro.so";
 const EXPLORER = "https://explorer.hiro.so/txid";
 
+// Router v-1-1 at the SM deployer — this is the current mainnet DLMM liquidity router.
+// The Bitflow API reference documents v-0-1 at a different address (SP3ESW…), which is
+// the older deployment. Our mainnet proofs (0b4a9c7c…, 85ffba93…) succeeded against v-1-1.
 const ROUTER_ADDR = "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD";
 const ROUTER_NAME = "dlmm-liquidity-router-v-1-1";
 
@@ -172,29 +175,31 @@ async function fetchPools(): Promise<PoolMeta[]> {
     `${BITFLOW_APP}/pools?amm_type=dlmm`
   );
   const list = (raw.data ?? raw.results ?? raw.pools ?? (Array.isArray(raw) ? raw : [])) as Record<string, unknown>[];
+  // Bitflow App API uses snake_case fields. No camelCase fallbacks — fail loudly on schema change.
   return list.map((p) => ({
-    pool_id: String(p.pool_id ?? p.poolId ?? ""),
-    pool_contract: String(p.pool_token ?? p.poolContract ?? p.core_address ?? ""),
-    token_x: String(p.token_x ?? (p as Record<string, Record<string, string>>).tokens?.tokenX?.contract ?? ""),
-    token_y: String(p.token_y ?? (p as Record<string, Record<string, string>>).tokens?.tokenY?.contract ?? ""),
-    token_x_symbol: String(p.token_x_symbol ?? (p as Record<string, Record<string, string>>).tokens?.tokenX?.symbol ?? "?"),
-    token_y_symbol: String(p.token_y_symbol ?? (p as Record<string, Record<string, string>>).tokens?.tokenY?.symbol ?? "?"),
-    token_x_decimals: Number(p.token_x_decimals ?? (p as Record<string, Record<string, string>>).tokens?.tokenX?.decimals ?? 8),
-    token_y_decimals: Number(p.token_y_decimals ?? (p as Record<string, Record<string, string>>).tokens?.tokenY?.decimals ?? 6),
-    active_bin: Number(p.active_bin ?? p.activeBin ?? 0),
-    bin_step: Number(p.bin_step ?? p.binStep ?? 0),
+    pool_id: String(p.pool_id ?? ""),
+    pool_contract: String(p.pool_token ?? ""),
+    token_x: String(p.token_x ?? ""),
+    token_y: String(p.token_y ?? ""),
+    token_x_symbol: String(p.token_x_symbol ?? "?"),
+    token_y_symbol: String(p.token_y_symbol ?? "?"),
+    token_x_decimals: Number(p.token_x_decimals ?? 8),
+    token_y_decimals: Number(p.token_y_decimals ?? 6),
+    active_bin: Number(p.active_bin ?? 0),
+    bin_step: Number(p.bin_step ?? 0),
   }));
 }
 
 async function fetchPoolBins(poolId: string): Promise<{ active_bin_id: number; bins: BinData[] }> {
   const raw = await fetchJson<Record<string, unknown>>(`${BITFLOW_QUOTES}/bins/${poolId}`);
-  const activeBin = Number(raw.active_bin_id ?? raw.activeBinId ?? 0);
+  // Bitflow Quotes API uses snake_case fields. No camelCase fallbacks.
+  const activeBin = Number(raw.active_bin_id ?? 0);
   const bins = ((raw.bins ?? []) as Record<string, unknown>[]).map((b) => ({
-    bin_id: Number(b.bin_id ?? b.binId),
-    reserve_x: String(b.reserve_x ?? b.reserveX ?? "0"),
-    reserve_y: String(b.reserve_y ?? b.reserveY ?? "0"),
+    bin_id: Number(b.bin_id),
+    reserve_x: String(b.reserve_x ?? "0"),
+    reserve_y: String(b.reserve_y ?? "0"),
     price: String(b.price ?? "0"),
-    liquidity: String(b.liquidity ?? b.bin_shares ?? "0"),
+    liquidity: String(b.liquidity ?? "0"),
   }));
   return { active_bin_id: activeBin, bins };
 }
@@ -203,17 +208,18 @@ async function fetchUserPositions(poolId: string, wallet: string): Promise<UserB
   const raw = await fetchJson<Record<string, unknown>>(
     `${BITFLOW_APP}/users/${wallet}/positions/${poolId}/bins`
   );
-  const bins = (raw.bins ?? raw.position_bins ?? (raw as Record<string, Record<string, unknown>>).positions?.bins ?? []) as Record<string, unknown>[];
+  // Bitflow App API uses snake_case fields. No camelCase fallbacks.
+  const bins = (raw.bins ?? []) as Record<string, unknown>[];
   return bins
     .filter((b) => {
-      const liq = BigInt(String(b.userLiquidity ?? b.user_liquidity ?? b.liquidity ?? "0"));
+      const liq = BigInt(String(b.user_liquidity ?? b.liquidity ?? "0"));
       return liq > 0n;
     })
     .map((b) => ({
-      bin_id: Number(b.bin_id ?? b.binId),
-      liquidity: String(b.userLiquidity ?? b.user_liquidity ?? b.liquidity ?? "0"),
-      reserve_x: String(b.reserve_x ?? b.reserveX ?? "0"),
-      reserve_y: String(b.reserve_y ?? b.reserveY ?? "0"),
+      bin_id: Number(b.bin_id),
+      liquidity: String(b.user_liquidity ?? b.liquidity ?? "0"),
+      reserve_x: String(b.reserve_x ?? "0"),
+      reserve_y: String(b.reserve_y ?? "0"),
       price: String(b.price ?? "0"),
     }));
 }
@@ -368,14 +374,17 @@ async function executeMove(
 
   const moveList = moves.map((m) => {
     const amt = BigInt(m.amount);
+    // Slippage protection: require ≥95% DLP back, cap fees at 5% of amount.
+    // If the contract returns fewer shares or charges higher fees, the tx reverts.
+    const minDlp = amt * 95n / 100n;
+    const maxFee = amt * 5n / 100n;
     return tupleCV({
       "from-bin-id": intCV(m.fromBinId),
       "active-bin-id-offset": intCV(m.activeBinOffset),
       amount: uintCV(amt),
-      "min-dlp": uintCV(1n),
-      // Allow up to full amount as liquidity fee (worst case, contract takes a cut)
-      "max-x-liquidity-fee": uintCV(amt),
-      "max-y-liquidity-fee": uintCV(amt),
+      "min-dlp": uintCV(minDlp),
+      "max-x-liquidity-fee": uintCV(maxFee),
+      "max-y-liquidity-fee": uintCV(maxFee),
       "pool-trait": contractPrincipalCV(poolAddr, poolName),
       "x-token-trait": contractPrincipalCV(xAddr, xName),
       "y-token-trait": contractPrincipalCV(yAddr, yName),
@@ -448,7 +457,7 @@ program
 
     try {
       const data = await fetchJson<Record<string, unknown>>(`${BITFLOW_QUOTES}/bins/dlmm_1`);
-      checks.bitflow_bins = { ok: !!data.active_bin_id || !!data.activeBinId, detail: `active_bin=${data.active_bin_id ?? data.activeBinId}` };
+      checks.bitflow_bins = { ok: !!data.active_bin_id, detail: `active_bin=${data.active_bin_id}` };
     } catch (e: unknown) {
       checks.bitflow_bins = { ok: false, detail: (e as Error).message };
     }
