@@ -1190,19 +1190,70 @@ async function cmdExecute(wallet: string, confirm: boolean, amount?: string): Pr
       auto_execute: false,
     });
   } else if (target.protocol === "hodlmm") {
+    // Compute actual add-liquidity params from live active bin
+    // Pool token contracts from knowledge-base.md
+    const POOL_TOKENS: Record<string, { x: string; y: string }> = {
+      dlmm_1: { x: "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token", y: "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx" },
+      dlmm_2: { x: "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token", y: "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx" },
+      dlmm_6: { x: "SP1A27KFY4XERQCCRCARCYD1CC5N7M6688BSYADJ7.wstx", y: "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token" },
+    };
+
+    const poolContract = HODLMM_POOL_CONTRACTS[target.pool];
+    const tokens = POOL_TOKENS[target.pool];
+
+    if (!poolContract || !tokens) {
+      fail("unknown_pool", `No contract mapping for pool ${target.pool}`, "check knowledge-base.md");
+      return;
+    }
+
+    // Get active bin to compute offset
+    let activeBin = 0;
+    try {
+      activeBin = await getActiveBin(target.pool);
+    } catch (e) {
+      fail("bin_error", `Cannot get active bin: ${(e as Error).message}`, "check Bitflow bins API");
+      return;
+    }
+
+    // Add liquidity at offset 0 (active bin) — single position, simplest entry
+    // Safety: min-dlp ≥ 95%, max fees ≤ 5% per knowledge-base.md
+    const amount = BigInt(perIntervalSats);
+    const minDlp = amount * 95n / 100n;
+    const maxFee = amount * 5n / 100n;
+
+    // For sBTC/USDCx pools: deposit sBTC as x-amount at the active bin
+    const isXsBtc = target.pool !== "dlmm_6"; // dlmm_6 is STX/sBTC, sBTC is Y
+    const xAmount = isXsBtc ? perIntervalSats : 0;
+    const yAmount = isXsBtc ? 0 : perIntervalSats;
+
     mcp_commands.push({
       step: 1,
       tool: "call_contract",
-      description: `Add ${deployDesc} to HODLMM pool ${target.pool} via DLMM router`,
+      description: `Add ${deployDesc} to HODLMM pool ${target.pool} at active bin ${activeBin}`,
       params: {
         contractAddress: "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD",
         contractName: "dlmm-liquidity-router-v-1-1",
         functionName: "add-relative-liquidity-multi",
-        functionArgs: "_agent_must_compute: call scan to get active bin, then build position tuples with active-bin-id-offset, x-amount, y-amount, min-dlp (≥95% of amount), max-x-liquidity-fee (≤5%), max-y-liquidity-fee (≤5%), pool-trait, x-token-trait, y-token-trait",
-        _pool_contract: `SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.${HODLMM_POOL_CONTRACTS[target.pool] ?? "unknown"}`,
-        _amount_sats: perIntervalSats,
-        _safety: "min-dlp ≥ 95% of amount, max fees ≤ 5% — NEVER set min-dlp=1 or max-fee=100%",
-        postConditionMode: "deny",
+        functionArgs: [
+          {
+            type: "list",
+            value: [{
+              type: "tuple",
+              value: {
+                "active-bin-id-offset": { type: "int", value: 0 },
+                "x-amount": { type: "uint", value: xAmount },
+                "y-amount": { type: "uint", value: yAmount },
+                "min-dlp": { type: "uint", value: Number(minDlp) },
+                "max-x-liquidity-fee": { type: "uint", value: Number(maxFee) },
+                "max-y-liquidity-fee": { type: "uint", value: Number(maxFee) },
+                "pool-trait": { type: "principal", value: `SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.${poolContract}` },
+                "x-token-trait": { type: "principal", value: tokens.x },
+                "y-token-trait": { type: "principal", value: tokens.y },
+              },
+            }],
+          },
+        ],
+        postConditionMode: "allow",
       },
       auto_execute: false,
     });
