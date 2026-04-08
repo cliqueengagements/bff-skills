@@ -6,7 +6,7 @@ description: "Autonomous agent behavior for HODLMM Move-Liquidity & Auto-Rebalan
 
 # Agent Behavior — HODLMM Move-Liquidity & Auto-Rebalancer
 
-## Operating modes
+## Decision order
 
 ### Manual mode (`run`)
 

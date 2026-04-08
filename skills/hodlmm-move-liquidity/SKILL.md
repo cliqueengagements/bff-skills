@@ -64,7 +64,17 @@ bun run hodlmm-move-liquidity/hodlmm-move-liquidity.ts run --wallet <addr> --poo
 
 # Execute
 bun run hodlmm-move-liquidity/hodlmm-move-liquidity.ts run --wallet <addr> --pool dlmm_1 --confirm --password <pass>
+
+# Custom spread (default: ±5 bins around active)
+bun run hodlmm-move-liquidity/hodlmm-move-liquidity.ts run --wallet <addr> --pool dlmm_1 --spread 3 --confirm --password <pass>
+
+# Force recenter an in-range position
+bun run hodlmm-move-liquidity/hodlmm-move-liquidity.ts run --wallet <addr> --pool dlmm_1 --force --confirm --password <pass>
 ```
+
+Options:
+- `--spread <n>` — bin spread ±N around active bin (default: 5, max: 10)
+- `--force` — force rebalance even if position is in range (recenter around active bin)
 
 ### auto
 
@@ -130,6 +140,20 @@ All commands emit JSON to stdout.
 }
 ```
 
+**run — in range (no action):**
+```json
+{
+  "status": "success",
+  "action": "run",
+  "data": {
+    "decision": "IN_RANGE",
+    "reason": "Position is already in the active range — earning fees. No move needed. Use --force to recenter.",
+    "health": { "..." : "..." }
+  },
+  "error": null
+}
+```
+
 **run — dry-run:**
 ```json
 {
@@ -145,12 +169,15 @@ All commands emit JSON to stdout.
       "pair": "sBTC/USDCx",
       "active_bin": 510,
       "atomic": true,
+      "spread": 5,
       "old_range": { "min": 500, "max": 504, "bins": 5 },
-      "new_range": { "min": 510, "max": 510, "bins": 1 },
+      "new_range": { "min": 505, "max": 515, "bins": 11 },
       "moves": [
-        { "from": 500, "to_offset": 0, "to_bin": 510, "dlp": "196000" },
-        { "from": 501, "to_offset": 0, "to_bin": 510, "dlp": "196000" }
-      ]
+        { "from": 500, "to_offset": -5, "to_bin": 505, "dlp": "196000" },
+        { "from": 501, "to_offset": -4, "to_bin": 506, "dlp": "196000" }
+      ],
+      "stx_balance": 12.5,
+      "estimated_gas_stx": 0.05
     }
   },
   "error": null
@@ -209,4 +236,4 @@ All commands emit JSON to stdout.
 
 - Requires `@stacks/transactions` and `@stacks/wallet-sdk` to be installed in the runtime environment.
 - Single atomic transaction via `move-relative-liquidity-multi` — either all bins move or none do. No partial execution risk.
-- All liquidity moves to the active bin (offset 0). The DLMM bin invariant requires bins below active to hold only Y token and bins above active to hold only X token. The active bin is the only bin that safely accepts both, and it earns the most fees since all trades flow through it.
+- Liquidity is distributed across ±spread bins around the active bin (default ±5). The DLMM bin invariant requires bins below active to hold only Y token and bins above active to hold only X token — source bins below active map to destination offsets [-spread, 0] and source bins above active map to [0, +spread].
