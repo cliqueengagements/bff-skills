@@ -374,6 +374,148 @@ async function executeMove(
   return result.txid as string;
 }
 
+// ─── Spread execution (withdraw from active bin + add across ±spread bins) ───
+
+async function executeWithdrawActive(
+  privateKey: string,
+  pool: PoolMeta,
+  dlpAmount: bigint,
+  nonce: bigint
+): Promise<string> {
+  const {
+    makeContractCall, broadcastTransaction,
+    listCV, tupleCV, intCV, uintCV, contractPrincipalCV,
+    PostConditionMode, AnchorMode,
+  } = await import("@stacks/transactions" as string);
+  const { STACKS_MAINNET } = await import("@stacks/network" as string);
+
+  const [poolAddr, poolName] = pool.pool_contract.split(".");
+  const [xAddr, xName] = pool.token_x.split(".");
+  const [yAddr, yName] = pool.token_y.split(".");
+
+  // Withdraw all DLP from active bin (offset 0)
+  // Contract requires min-x-amount + min-y-amount > 0 (ERR_INVALID_AMOUNT u1002)
+  const withdrawList = [
+    tupleCV({
+      "active-bin-id-offset": intCV(0),
+      amount: uintCV(dlpAmount),
+      "min-x-amount": uintCV(0n),
+      "min-y-amount": uintCV(1n),
+      "pool-trait": contractPrincipalCV(poolAddr, poolName),
+    }),
+  ];
+
+  const tx = await makeContractCall({
+    contractAddress: ROUTER_ADDR,
+    contractName: ROUTER_NAME,
+    functionName: "withdraw-relative-liquidity-same-multi",
+    functionArgs: [
+      listCV(withdrawList),
+      contractPrincipalCV(xAddr, xName),
+      contractPrincipalCV(yAddr, yName),
+      uintCV(0n),
+      uintCV(1n),
+    ],
+    senderKey: privateKey,
+    network: STACKS_MAINNET,
+    postConditions: [],
+    postConditionMode: PostConditionMode.Allow,
+    anchorMode: AnchorMode.Any,
+    nonce,
+    fee: 50000n,
+  });
+
+  const result = await broadcastTransaction({ transaction: tx, network: STACKS_MAINNET });
+  if ("error" in result && result.error) {
+    throw new Error(`Withdraw broadcast failed: ${result.error} — ${(result as Record<string, string>).reason ?? ""}`);
+  }
+  return result.txid as string;
+}
+
+async function executeAddSpread(
+  privateKey: string,
+  pool: PoolMeta,
+  totalX: bigint,
+  totalY: bigint,
+  activeBin: number,
+  spread: number,
+  nonce: bigint
+): Promise<string> {
+  const {
+    makeContractCall, broadcastTransaction,
+    listCV, tupleCV, intCV, uintCV, contractPrincipalCV,
+    someCV, PostConditionMode, AnchorMode,
+  } = await import("@stacks/transactions" as string);
+  const { STACKS_MAINNET } = await import("@stacks/network" as string);
+
+  const [poolAddr, poolName] = pool.pool_contract.split(".");
+  const [xAddr, xName] = pool.token_x.split(".");
+  const [yAddr, yName] = pool.token_y.split(".");
+
+  // Build bins: X above active, Y below active, both at active
+  const bins: { offset: number; x: bigint; y: bigint }[] = [];
+  const xSlots = spread + 1; // active + above
+  const ySlots = spread + 1; // active + below
+  const xPerBin = xSlots > 0 ? totalX / BigInt(xSlots) : 0n;
+  const yPerBin = ySlots > 0 ? totalY / BigInt(ySlots) : 0n;
+
+  // Below active: Y only
+  for (let i = -spread; i < 0; i++) {
+    if (yPerBin > 0n) bins.push({ offset: i, x: 0n, y: yPerBin });
+  }
+  // Active bin: both
+  bins.push({ offset: 0, x: xPerBin, y: yPerBin });
+  // Above active: X only
+  for (let i = 1; i <= spread; i++) {
+    if (xPerBin > 0n) bins.push({ offset: i, x: xPerBin, y: 0n });
+  }
+
+  const addList = bins.map((b) =>
+    tupleCV({
+      "active-bin-id-offset": intCV(b.offset),
+      "x-amount": uintCV(b.x),
+      "y-amount": uintCV(b.y),
+      "min-dlp": uintCV(1n),
+      "max-x-liquidity-fee": uintCV(b.x),
+      "max-y-liquidity-fee": uintCV(b.y),
+    })
+  );
+
+  // Active-bin-tolerance: reject if bin moved more than ±2
+  const tolerance = someCV(
+    tupleCV({
+      "expected-bin-id": intCV(activeBin - CENTER_BIN_ID),
+      "max-deviation": uintCV(2n),
+    })
+  );
+
+  const tx = await makeContractCall({
+    contractAddress: ROUTER_ADDR,
+    contractName: ROUTER_NAME,
+    functionName: "add-relative-liquidity-same-multi",
+    functionArgs: [
+      listCV(addList),
+      contractPrincipalCV(poolAddr, poolName),
+      contractPrincipalCV(xAddr, xName),
+      contractPrincipalCV(yAddr, yName),
+      tolerance,
+    ],
+    senderKey: privateKey,
+    network: STACKS_MAINNET,
+    postConditions: [],
+    postConditionMode: PostConditionMode.Allow,
+    anchorMode: AnchorMode.Any,
+    nonce,
+    fee: 50000n,
+  });
+
+  const result = await broadcastTransaction({ transaction: tx, network: STACKS_MAINNET });
+  if ("error" in result && result.error) {
+    throw new Error(`Add-spread broadcast failed: ${result.error} — ${(result as Record<string, string>).reason ?? ""}`);
+  }
+  return result.txid as string;
+}
+
 // ─── State ────────────────────────────────────────────────────────────────────
 
 function loadState(): CooldownState {
@@ -560,34 +702,45 @@ program
         return;
       }
 
-      // 6. Build atomic move plan
+      // 6. Build move + spread plan
       const movePositions = buildMovePositions(userBins, activeBin);
+      const activeBinDlp = userBins.find((b) => b.bin_id === activeBin);
+      const existingActiveDlp = BigInt(activeBinDlp?.liquidity ?? "0");
+      // When using sequential nonces, the move (step 1) changes on-chain DLP
+      // but we can't read the result until it confirms. Only withdraw what we
+      // KNOW exists at the active bin pre-move. Moved DLP stays at active earning fees.
+      // If no bins need moving, withdraw all existing DLP for the spread.
+      const dlpToWithdraw = existingActiveDlp;
 
       const plan = {
         pool_id: poolId,
         pair: health.pair,
         active_bin: activeBin,
-        atomic: true,
+        spread,
         old_range: { min: health.user_bin_min, max: health.user_bin_max, bins: health.user_bins.length },
-        new_range: { min: activeBin, max: activeBin, bins: 1 },
-        moves: movePositions.map((m) => ({
-          from: m.fromBinId + CENTER_BIN_ID, // Display as API bin ID
-          from_signed: m.fromBinId,
-          to_offset: m.activeBinOffset,
-          to_bin: activeBin + m.activeBinOffset,
-          dlp: m.amount,
-        })),
+        new_range: { min: activeBin - spread, max: activeBin + spread, bins: 2 * spread + 1 },
+        step_1_move: movePositions.length > 0 ? {
+          description: "Atomic move all bins → active bin",
+          moves: movePositions.map((m) => ({
+            from: m.fromBinId + CENTER_BIN_ID,
+            to_bin: activeBin,
+            dlp: m.amount,
+          })),
+        } : null,
+        step_2_withdraw: {
+          description: "Withdraw DLP from active bin for spread",
+          dlp: dlpToWithdraw.toString(),
+        },
+        step_3_spread: {
+          description: `Re-deposit across ±${spread} bins around active`,
+          bins: 2 * spread + 1,
+          range: `${activeBin - spread}–${activeBin + spread}`,
+        },
         stx_balance: stxBal,
-        estimated_gas_stx: 0.05,
+        estimated_gas_stx: movePositions.length > 0 ? 0.15 : 0.1,
       };
 
-      // 7. Sanity: must have moves
-      if (movePositions.length === 0) {
-        out("blocked", "run", { health }, "No move positions to build");
-        return;
-      }
-
-      // 8. Dry run
+      // 7. Dry run
       if (!confirmed) {
         out("success", "run", {
           decision: "MOVE_NEEDED",
@@ -599,13 +752,13 @@ program
         return;
       }
 
-      // 9. Validate pool contract format
+      // 8. Validate pool contract format
       if (!pool.pool_contract.includes(".") || !pool.token_x.includes(".") || !pool.token_y.includes(".")) {
         out("error", "run", null, `Invalid contract format for pool ${poolId} — missing deployer.name separator`);
         return;
       }
 
-      // 10. Execute — single atomic transaction
+      // 9. Execute
       if (!opts.password) {
         out("blocked", "run", null, "--password required with --confirm");
         return;
@@ -618,12 +771,43 @@ program
         return;
       }
 
-      const nonce = await fetchNonce(wallet);
-      log(`Nonce: ${nonce}`);
+      let nonce = await fetchNonce(wallet);
+      const txids: Record<string, { txid: string; explorer: string }> = {};
 
-      log("Broadcasting atomic move...");
-      const moveTxId = await executeMove(keys.stxPrivateKey, pool, movePositions, nonce);
-      log(`Move broadcast: ${moveTxId}`);
+      // Step 1: Move all bins → active bin (if there are bins to move)
+      if (movePositions.length > 0) {
+        log(`Step 1: Moving ${movePositions.length} bins → active bin ${activeBin}...`);
+        const moveTxId = await executeMove(keys.stxPrivateKey, pool, movePositions, nonce);
+        log(`  Move broadcast: ${moveTxId}`);
+        txids.move = { txid: moveTxId, explorer: `${EXPLORER}/${moveTxId}?chain=mainnet` };
+        nonce += 1n;
+      }
+
+      // Step 2: Withdraw DLP from active bin for spread
+      if (dlpToWithdraw === 0n) {
+        out("blocked", "run", null, "No DLP to withdraw from active bin");
+        return;
+      }
+      log(`Step 2: Withdrawing ${dlpToWithdraw} DLP from active bin...`);
+      const withdrawTxId = await executeWithdrawActive(keys.stxPrivateKey, pool, dlpToWithdraw, nonce);
+      log(`  Withdraw broadcast: ${withdrawTxId}`);
+      txids.withdraw = { txid: withdrawTxId, explorer: `${EXPLORER}/${withdrawTxId}?chain=mainnet` };
+      nonce += 1n;
+
+      // Step 3: Add spread across ±spread bins
+      // Estimate tokens from withdrawal (proportional to pool reserves at active bin)
+      const activeBinData = binsData.bins.find((b) => b.bin_id === activeBin);
+      const poolShares = BigInt(activeBinData?.liquidity || "1");
+      const poolRx = BigInt(activeBinData?.reserve_x || "0");
+      const poolRy = BigInt(activeBinData?.reserve_y || "0");
+      // After move, pool shares increase. Estimate conservatively using 95% of expected tokens.
+      const estX = poolShares > 0n ? (dlpToWithdraw * poolRx * 95n) / (poolShares * 100n) : 0n;
+      const estY = poolShares > 0n ? (dlpToWithdraw * poolRy * 95n) / (poolShares * 100n) : 0n;
+
+      log(`Step 3: Spreading across ±${spread} bins (est X=${estX}, Y=${estY})...`);
+      const addTxId = await executeAddSpread(keys.stxPrivateKey, pool, estX, estY, activeBin, spread, nonce);
+      log(`  Add-spread broadcast: ${addTxId}`);
+      txids.spread = { txid: addTxId, explorer: `${EXPLORER}/${addTxId}?chain=mainnet` };
 
       // Record cooldown
       state[poolId] = { last_move_at: new Date().toISOString() };
@@ -633,10 +817,7 @@ program
         decision: "EXECUTED",
         health,
         plan,
-        transaction: {
-          txid: moveTxId,
-          explorer: `${EXPLORER}/${moveTxId}?chain=mainnet`,
-        },
+        transactions: txids,
       });
     } catch (e: unknown) {
       out("error", "run", null, (e as Error).message);
@@ -751,27 +932,53 @@ program
               continue;
             }
 
-            // Build atomic move plan
+            // Build move + spread plan
             const movePositions = buildMovePositions(userBins, activeBin);
+            const activeBinDlp = userBins.find((b) => b.bin_id === activeBin);
+            const existingActiveDlp = BigInt(activeBinDlp?.liquidity ?? "0");
+            const totalDlpToMove = movePositions.reduce((s, m) => s + BigInt(m.amount), 0n);
 
-            if (movePositions.length === 0) {
-              log(`${pool.pool_id}: no move positions — skip`);
-              errors++;
+            if (totalDlpToMove === 0n && existingActiveDlp === 0n) {
+              log(`${pool.pool_id}: no DLP to move — skip`);
               continue;
             }
 
-            // Execute — single atomic transaction
-            log(`${pool.pool_id} (${health.pair}): drift ${health.drift} bins — MOVING (atomic)`);
+            log(`${pool.pool_id} (${health.pair}): drift ${health.drift} bins — REBALANCING`);
 
-            const nonce = await fetchNonce(wallet);
-            const moveTxId = await executeMove(keys.stxPrivateKey, pool, movePositions, nonce);
-            log(`  Move broadcast: ${moveTxId}`);
+            let nonce = await fetchNonce(wallet);
+
+            // Step 1: Move all bins → active bin
+            if (movePositions.length > 0) {
+              log(`  Step 1: Moving ${movePositions.length} bins → active bin...`);
+              const moveTxId = await executeMove(keys.stxPrivateKey, pool, movePositions, nonce);
+              log(`  Move: ${moveTxId}`);
+              nonce += 1n;
+            }
+
+            // Step 2: Withdraw from active bin (only pre-existing DLP, not newly moved)
+            const dlpToWithdraw = existingActiveDlp;
+            log(`  Step 2: Withdrawing ${dlpToWithdraw} DLP from active bin...`);
+            const withdrawTxId = await executeWithdrawActive(keys.stxPrivateKey, pool, dlpToWithdraw, nonce);
+            log(`  Withdraw: ${withdrawTxId}`);
+            nonce += 1n;
+
+            // Step 3: Spread across ±spread bins
+            const activeBinData = binsData.bins.find((b) => b.bin_id === activeBin);
+            const poolShares = BigInt(activeBinData?.liquidity || "1");
+            const poolRx = BigInt(activeBinData?.reserve_x || "0");
+            const poolRy = BigInt(activeBinData?.reserve_y || "0");
+            const estX = poolShares > 0n ? (dlpToWithdraw * poolRx * 95n) / (poolShares * 100n) : 0n;
+            const estY = poolShares > 0n ? (dlpToWithdraw * poolRy * 95n) / (poolShares * 100n) : 0n;
+
+            log(`  Step 3: Spreading across ±${spread} bins...`);
+            const addTxId = await executeAddSpread(keys.stxPrivateKey, pool, estX, estY, activeBin, spread, nonce);
+            log(`  Spread: ${addTxId}`);
 
             // Record cooldown
             state[pool.pool_id] = { last_move_at: new Date().toISOString() };
             saveState(state);
 
-            log(`  Move complete: ${health.user_bin_min}-${health.user_bin_max} → ${activeBin - spread}-${activeBin + spread}`);
+            log(`  Complete: ${health.user_bin_min}-${health.user_bin_max} → ${activeBin - spread}-${activeBin + spread}`);
             moves++;
 
           } catch (e: unknown) {
