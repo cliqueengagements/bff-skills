@@ -227,8 +227,11 @@ async function fetchNonce(wallet: string): Promise<bigint> {
   const data = await fetchJson<Record<string, unknown>>(
     `${HIRO_API}/extended/v1/address/${wallet}/nonces`
   );
-  const possible = Number(data.possible_next_nonce ?? data.last_executed_tx_nonce ?? 0);
-  return BigInt(possible);
+  const nextNonce = data.possible_next_nonce;
+  if (nextNonce !== undefined && nextNonce !== null) return BigInt(Number(nextNonce));
+  const lastExec = data.last_executed_tx_nonce;
+  if (lastExec !== undefined && lastExec !== null) return BigInt(Number(lastExec) + 1);
+  return 0n;
 }
 
 // ─── Position assessment ──────────────────────────────────────────────────────
@@ -250,8 +253,8 @@ function assessPosition(pool: PoolMeta, userBins: UserBin[], activeBin: number, 
     totalDlp += dlp;
 
     // If user position has reserve data, use it; otherwise estimate from pool bins
-    const rx = BigInt(b.reserve_x);
-    const ry = BigInt(b.reserve_y);
+    const rx = BigInt(b.reserve_x || "0");
+    const ry = BigInt(b.reserve_y || "0");
     if (rx > 0n || ry > 0n) {
       totalX += rx;
       totalY += ry;
@@ -286,13 +289,15 @@ function assessPosition(pool: PoolMeta, userBins: UserBin[], activeBin: number, 
 // ─── Build withdrawal + deposit plans ─────────────────────────────────────────
 
 function buildWithdrawPositions(userBins: UserBin[], activeBin: number) {
-  return userBins.map((b) => ({
-    activeBinOffset: b.bin_id - activeBin,
-    amount: b.liquidity,
+  return userBins.map((b) => {
+    const offset = b.bin_id - activeBin;
     // Contract requires min-x + min-y > 0 (ERR_INVALID_AMOUNT u1002)
-    minXAmount: "0",
-    minYAmount: "1",
-  }));
+    // and x-amount >= min-x-amount, y-amount >= min-y-amount (u1004/u1005)
+    // Bins above active hold only X; bins below hold only Y; active holds both
+    const minXAmount = offset >= 0 ? "1" : "0";
+    const minYAmount = offset <= 0 ? "1" : "0";
+    return { activeBinOffset: offset, amount: b.liquidity, minXAmount, minYAmount };
+  });
 }
 
 function buildDepositBins(totalX: bigint, totalY: bigint, spread: number) {
@@ -683,7 +688,13 @@ program
         return;
       }
 
-      // 9. Execute
+      // 9. Validate pool contract format
+      if (!pool.pool_contract.includes(".") || !pool.token_x.includes(".") || !pool.token_y.includes(".")) {
+        out("error", "run", null, `Invalid contract format for pool ${poolId} — missing deployer.name separator`);
+        return;
+      }
+
+      // 10. Execute
       if (!opts.password) {
         out("blocked", "run", null, "--password required with --confirm");
         return;
