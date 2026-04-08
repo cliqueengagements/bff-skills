@@ -23,7 +23,7 @@ Agents holding sBTC need a single decision function that answers two questions: 
 
 ## Safety notes
 
-- **Writes to chain:** The `execute` command emits MCP commands for `zest_supply` or `bitflow_hodlmm_add_liquidity`. These are emitted with `auto_execute: false` — the agent must confirm.
+- **Writes to chain:** The `execute` command emits MCP commands for `zest_supply` or `call_contract (add-relative-liquidity-multi on the DLMM router)`. These are emitted with `auto_execute: false` — the agent must confirm.
 - **--confirm required:** Without `--confirm`, execute runs in dry-run preview mode showing execution_mode.
 - **Oracle gate:** Execute is blocked if Pyth price diverges >2% from pool price or if Pyth data is older than 120 seconds.
 - **DCA mode:** Oracle divergence between 1-2%, whale pressure, fee spikes, or high-risk pools trigger DCA — capital is split into 5 intervals.

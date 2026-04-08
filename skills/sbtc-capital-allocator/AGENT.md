@@ -17,7 +17,7 @@ description: "Autonomous sBTC capital allocator that routes between HODLMM and Z
 5. If recommendation `action` is `move`:
    - If `execution_mode` is `lump_sum`: run `execute --confirm` once.
    - If `execution_mode` is `dca`: run `execute --confirm` once per interval. Wait between intervals (recommended: 30+ minutes, matching cooldown). Re-run `recommend` before each interval to re-evaluate conditions.
-6. Call the emitted MCP tool (`zest_supply` or `bitflow_hodlmm_add_liquidity`) to complete execution.
+6. Call the emitted MCP tool (`zest_supply` or `call_contract` for HODLMM `add-relative-liquidity-multi`) to complete execution.
 7. Verify the transaction status after broadcast.
 
 ## Guardrails
