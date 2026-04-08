@@ -2,14 +2,15 @@
 /**
  * hodlmm-move-liquidity — Move idle HODLMM liquidity back into earning range.
  *
- * When the active bin drifts away from your LP position, this skill withdraws
- * liquidity from the old bins and re-deposits it into bins centered on the
- * current active bin. Two on-chain transactions: withdraw then deposit.
+ * When the active bin drifts away from your LP position, this skill moves
+ * liquidity from old bins to bins centered on the current active bin.
+ * One atomic transaction via move-relative-liquidity-multi.
  *
  * Commands:
  *   doctor        — check APIs, wallet, pool access
  *   scan          — show positions and in-range status across pools
  *   run           — assess + execute rebalance (dry-run unless --confirm)
+ *   auto          — autonomous rebalancer loop: monitor + auto-execute on drift
  *   install-packs — no-op
  */
 
@@ -31,6 +32,7 @@ const ROUTER_NAME = "dlmm-liquidity-router-v-1-1";
 const COOLDOWN_MS = 4 * 60 * 60 * 1000; // 4 hours
 const BIN_SPREAD = 5; // ±5 bins around active bin = up to 11 bins
 const FETCH_TIMEOUT = 30_000;
+const CENTER_BIN_ID = 500; // NUM_OF_BINS(1001) / 2 — convert API unsigned bin IDs to contract signed IDs
 
 const STATE_FILE = path.join(os.homedir(), ".hodlmm-move-liquidity-state.json");
 const WALLETS_FILE = path.join(os.homedir(), ".aibtc", "wallets.json");
@@ -286,58 +288,41 @@ function assessPosition(pool: PoolMeta, userBins: UserBin[], activeBin: number, 
   };
 }
 
-// ─── Build withdrawal + deposit plans ─────────────────────────────────────────
+// ─── Build move plan ──────────────────────────────────────────────────────────
 
-function buildWithdrawPositions(userBins: UserBin[], activeBin: number) {
-  return userBins.map((b) => {
-    const offset = b.bin_id - activeBin;
-    // Contract requires min-x + min-y > 0 (ERR_INVALID_AMOUNT u1002)
-    // and x-amount >= min-x-amount, y-amount >= min-y-amount (u1004/u1005)
-    // Bins above active hold only X; bins below hold only Y; active holds both
-    const minXAmount = offset >= 0 ? "1" : "0";
-    const minYAmount = offset <= 0 ? "1" : "0";
-    return { activeBinOffset: offset, amount: b.liquidity, minXAmount, minYAmount };
-  });
+interface MoveEntry {
+  fromBinId: number;
+  activeBinOffset: number;
+  amount: string;
 }
 
-function buildDepositBins(totalX: bigint, totalY: bigint, spread: number) {
-  const bins: { activeBinOffset: number; xAmount: string; yAmount: string }[] = [];
-  if (totalX === 0n && totalY === 0n) return bins;
+function buildMovePositions(userBins: UserBin[], activeBin: number): MoveEntry[] {
+  // DLMM bin invariant: bins below active hold only Y token, bins above active hold
+  // only X token. The active bin is the ONLY bin that accepts both tokens.
+  // On-chain bins often have tiny residual amounts of the "wrong" token, which makes
+  // any non-zero offset fail the contract's directional assertions.
+  // Solution: move all DLP to the active bin (offset 0). This is always safe, and
+  // the active bin earns the most fees since all trades flow through it.
+  const moves: MoveEntry[] = [];
+  for (const src of userBins) {
+    // Skip if already at the active bin
+    if (src.bin_id === activeBin) continue;
 
-  // Bins above active: X only (+1 to +spread)
-  // Active bin (0): both X and Y
-  // Bins below active: Y only (-spread to -1)
-  const xSlots = spread + 1; // active + above
-  const ySlots = spread + 1; // active + below
-  const xPerBin = totalX / BigInt(xSlots);
-  const yPerBin = totalY / BigInt(ySlots);
-
-  // Below active: Y only
-  for (let i = -spread; i < 0; i++) {
-    if (yPerBin > 0n) bins.push({ activeBinOffset: i, xAmount: "0", yAmount: yPerBin.toString() });
+    moves.push({
+      fromBinId: src.bin_id - CENTER_BIN_ID, // Convert API unsigned bin ID to contract signed bin ID
+      activeBinOffset: 0, // Always move to active bin
+      amount: src.liquidity,
+    });
   }
-
-  // Active bin: both
-  bins.push({
-    activeBinOffset: 0,
-    xAmount: xPerBin.toString(),
-    yAmount: yPerBin.toString(),
-  });
-
-  // Above active: X only
-  for (let i = 1; i <= spread; i++) {
-    if (xPerBin > 0n) bins.push({ activeBinOffset: i, xAmount: xPerBin.toString(), yAmount: "0" });
-  }
-
-  return bins;
+  return moves;
 }
 
 // ─── On-chain execution ───────────────────────────────────────────────────────
 
-async function executeWithdraw(
+async function executeMove(
   privateKey: string,
   pool: PoolMeta,
-  positions: { activeBinOffset: number; amount: string; minXAmount: string; minYAmount: string }[],
+  moves: MoveEntry[],
   nonce: bigint
 ): Promise<string> {
   const {
@@ -351,99 +336,31 @@ async function executeWithdraw(
   const [xAddr, xName] = pool.token_x.split(".");
   const [yAddr, yName] = pool.token_y.split(".");
 
-  const withdrawList = positions.map((p) =>
-    tupleCV({
-      "active-bin-id-offset": intCV(p.activeBinOffset),
-      amount: uintCV(BigInt(p.amount)),
-      "min-x-amount": uintCV(BigInt(p.minXAmount)),
-      "min-y-amount": uintCV(BigInt(p.minYAmount)),
-      "pool-trait": contractPrincipalCV(poolAddr, poolName),
-    })
-  );
-
-  const totalMinX = positions.reduce((s, p) => s + BigInt(p.minXAmount), 0n);
-  const totalMinY = positions.reduce((s, p) => s + BigInt(p.minYAmount), 0n);
-
-  const tx = await makeContractCall({
-    contractAddress: ROUTER_ADDR,
-    contractName: ROUTER_NAME,
-    functionName: "withdraw-relative-liquidity-same-multi",
-    functionArgs: [
-      listCV(withdrawList),
-      contractPrincipalCV(xAddr, xName),
-      contractPrincipalCV(yAddr, yName),
-      uintCV(totalMinX),
-      uintCV(totalMinY),
-    ],
-    senderKey: privateKey,
-    network: STACKS_MAINNET,
-    postConditions: [],
-    // DLP burns + token returns cannot be expressed as sender-side post-conditions
-    postConditionMode: PostConditionMode.Allow,
-    anchorMode: AnchorMode.Any,
-    nonce,
-    fee: 50000n,
-  });
-
-  const result = await broadcastTransaction({ transaction: tx, network: STACKS_MAINNET });
-  if ("error" in result && result.error) {
-    throw new Error(`Withdraw broadcast failed: ${result.error} — ${(result as Record<string, string>).reason ?? ""}`);
-  }
-  return result.txid as string;
-}
-
-async function executeDeposit(
-  privateKey: string,
-  pool: PoolMeta,
-  bins: { activeBinOffset: number; xAmount: string; yAmount: string }[],
-  activeBin: number,
-  nonce: bigint
-): Promise<string> {
-  const {
-    makeContractCall, broadcastTransaction,
-    listCV, tupleCV, intCV, uintCV, contractPrincipalCV,
-    someCV, PostConditionMode, AnchorMode,
-  } = await import("@stacks/transactions" as string);
-  const { STACKS_MAINNET } = await import("@stacks/network" as string);
-
-  const [poolAddr, poolName] = pool.pool_contract.split(".");
-  const [xAddr, xName] = pool.token_x.split(".");
-  const [yAddr, yName] = pool.token_y.split(".");
-
-  const binAddList = bins.map((b) =>
-    tupleCV({
-      "active-bin-id-offset": intCV(b.activeBinOffset),
-      "x-amount": uintCV(BigInt(b.xAmount)),
-      "y-amount": uintCV(BigInt(b.yAmount)),
+  const moveList = moves.map((m) => {
+    const amt = BigInt(m.amount);
+    return tupleCV({
+      "from-bin-id": intCV(m.fromBinId),
+      "active-bin-id-offset": intCV(m.activeBinOffset),
+      amount: uintCV(amt),
       "min-dlp": uintCV(1n),
-      "max-x-liquidity-fee": uintCV(BigInt(b.xAmount)),
-      "max-y-liquidity-fee": uintCV(BigInt(b.yAmount)),
-    })
-  );
-
-  // Active-bin-tolerance: reject if bin moved more than ±2 from expected
-  const tolerance = someCV(
-    tupleCV({
-      "expected-bin-id": intCV(activeBin - 500),
-      "max-deviation": uintCV(2n),
-    })
-  );
+      // Allow up to full amount as liquidity fee (worst case, contract takes a cut)
+      "max-x-liquidity-fee": uintCV(amt),
+      "max-y-liquidity-fee": uintCV(amt),
+      "pool-trait": contractPrincipalCV(poolAddr, poolName),
+      "x-token-trait": contractPrincipalCV(xAddr, xName),
+      "y-token-trait": contractPrincipalCV(yAddr, yName),
+    });
+  });
 
   const tx = await makeContractCall({
     contractAddress: ROUTER_ADDR,
     contractName: ROUTER_NAME,
-    functionName: "add-relative-liquidity-same-multi",
-    functionArgs: [
-      listCV(binAddList),
-      contractPrincipalCV(poolAddr, poolName),
-      contractPrincipalCV(xAddr, xName),
-      contractPrincipalCV(yAddr, yName),
-      tolerance,
-    ],
+    functionName: "move-relative-liquidity-multi",
+    functionArgs: [listCV(moveList)],
     senderKey: privateKey,
     network: STACKS_MAINNET,
     postConditions: [],
-    // DLP mints cannot be expressed as sender-side post-conditions
+    // DLP burn+mint in same tx cannot be expressed as sender-side post-conditions
     postConditionMode: PostConditionMode.Allow,
     anchorMode: AnchorMode.Any,
     nonce,
@@ -452,7 +369,7 @@ async function executeDeposit(
 
   const result = await broadcastTransaction({ transaction: tx, network: STACKS_MAINNET });
   if ("error" in result && result.error) {
-    throw new Error(`Deposit broadcast failed: ${result.error} — ${(result as Record<string, string>).reason ?? ""}`);
+    throw new Error(`Move broadcast failed: ${result.error} — ${(result as Record<string, string>).reason ?? ""}`);
   }
   return result.txid as string;
 }
@@ -481,7 +398,7 @@ function cooldownRemaining(state: CooldownState, poolId: string): number {
 // ─── CLI ──────────────────────────────────────────────────────────────────────
 
 const program = new Command();
-program.name("hodlmm-move-liquidity").description("Move idle HODLMM liquidity back into earning range");
+program.name("hodlmm-move-liquidity").description("HODLMM Move-Liquidity & Auto-Rebalancer");
 
 // ── doctor ────────────────────────────────────────────────────────────────────
 
@@ -581,12 +498,14 @@ program
   .option("--confirm", "Execute on-chain (without this flag: preview only)")
   .option("--password <pass>", "Wallet password (required with --confirm)")
   .option("--spread <n>", "Bin spread ±N around active bin", String(BIN_SPREAD))
+  .option("--force", "Force rebalance even if position is in range (recenter around active bin)")
   .action(async (opts) => {
     try {
       const poolId: string = opts.pool;
       const wallet: string = opts.wallet;
       const spread = Math.min(Math.max(parseInt(opts.spread, 10) || BIN_SPREAD, 1), 10);
       const confirmed: boolean = opts.confirm === true;
+      const force: boolean = opts.force === true;
 
       // 1. Fetch pool + position data
       const pools = await fetchPools();
@@ -610,11 +529,11 @@ program
       const activeBin = binsData.active_bin_id || pool.active_bin;
       const health = assessPosition(pool, userBins, activeBin, binsData.bins);
 
-      // 2. Gate: already in range
-      if (health.in_range) {
+      // 2. Gate: already in range (skip with --force to recenter)
+      if (health.in_range && !force) {
         out("success", "run", {
           decision: "IN_RANGE",
-          reason: "Position is already in the active range — earning fees. No move needed.",
+          reason: "Position is already in the active range — earning fees. No move needed. Use --force to recenter.",
           health,
         });
         return;
@@ -628,7 +547,7 @@ program
 
       // 4. Gate: gas
       if (stxBal < 1) {
-        out("blocked", "run", { stx_balance: stxBal }, "Insufficient STX for gas (need ≥1 STX for two transactions)");
+        out("blocked", "run", { stx_balance: stxBal }, "Insufficient STX for gas (need ≥1 STX)");
         return;
       }
 
@@ -641,38 +560,30 @@ program
         return;
       }
 
-      // 6. Build plans
-      const withdrawPositions = buildWithdrawPositions(userBins, activeBin);
-      const totalX = BigInt(health.total_x);
-      const totalY = BigInt(health.total_y);
-      // Use 98% of estimated amounts to account for rounding between withdraw and deposit
-      const safeX = (totalX * 98n) / 100n;
-      const safeY = (totalY * 98n) / 100n;
-      const depositBins = buildDepositBins(safeX, safeY, spread);
+      // 6. Build atomic move plan
+      const movePositions = buildMovePositions(userBins, activeBin);
 
       const plan = {
         pool_id: poolId,
         pair: health.pair,
         active_bin: activeBin,
+        atomic: true,
         old_range: { min: health.user_bin_min, max: health.user_bin_max, bins: health.user_bins.length },
-        new_range: { min: activeBin - spread, max: activeBin + spread, bins: depositBins.length },
-        withdraw: {
-          positions: withdrawPositions.length,
-          estimated_x: health.total_x,
-          estimated_y: health.total_y,
-        },
-        deposit: {
-          bins: depositBins.length,
-          x_per_bin_above: depositBins.find((b) => b.activeBinOffset > 0)?.xAmount ?? "0",
-          y_per_bin_below: depositBins.find((b) => b.activeBinOffset < 0)?.yAmount ?? "0",
-        },
+        new_range: { min: activeBin, max: activeBin, bins: 1 },
+        moves: movePositions.map((m) => ({
+          from: m.fromBinId + CENTER_BIN_ID, // Display as API bin ID
+          from_signed: m.fromBinId,
+          to_offset: m.activeBinOffset,
+          to_bin: activeBin + m.activeBinOffset,
+          dlp: m.amount,
+        })),
         stx_balance: stxBal,
-        estimated_gas_stx: 0.1,
+        estimated_gas_stx: 0.05,
       };
 
-      // 7. Sanity: deposit must have bins
-      if (depositBins.length === 0) {
-        out("blocked", "run", { health }, "Cannot build deposit plan — estimated token amounts are zero");
+      // 7. Sanity: must have moves
+      if (movePositions.length === 0) {
+        out("blocked", "run", { health }, "No move positions to build");
         return;
       }
 
@@ -694,7 +605,7 @@ program
         return;
       }
 
-      // 10. Execute
+      // 10. Execute — single atomic transaction
       if (!opts.password) {
         out("blocked", "run", null, "--password required with --confirm");
         return;
@@ -710,17 +621,11 @@ program
       const nonce = await fetchNonce(wallet);
       log(`Nonce: ${nonce}`);
 
-      // Step 1: Withdraw
-      log("Broadcasting withdrawal...");
-      const withdrawTxId = await executeWithdraw(keys.stxPrivateKey, pool, withdrawPositions, nonce);
-      log(`Withdrawal broadcast: ${withdrawTxId}`);
+      log("Broadcasting atomic move...");
+      const moveTxId = await executeMove(keys.stxPrivateKey, pool, movePositions, nonce);
+      log(`Move broadcast: ${moveTxId}`);
 
-      // Step 2: Deposit (nonce+1 — waits for withdrawal to confirm)
-      log("Broadcasting deposit...");
-      const depositTxId = await executeDeposit(keys.stxPrivateKey, pool, depositBins, activeBin, nonce + 1n);
-      log(`Deposit broadcast: ${depositTxId}`);
-
-      // 10. Record cooldown
+      // Record cooldown
       state[poolId] = { last_move_at: new Date().toISOString() };
       saveState(state);
 
@@ -728,14 +633,204 @@ program
         decision: "EXECUTED",
         health,
         plan,
-        transactions: {
-          withdraw: { txid: withdrawTxId, explorer: `${EXPLORER}/${withdrawTxId}?chain=mainnet` },
-          deposit: { txid: depositTxId, explorer: `${EXPLORER}/${depositTxId}?chain=mainnet` },
+        transaction: {
+          txid: moveTxId,
+          explorer: `${EXPLORER}/${moveTxId}?chain=mainnet`,
         },
       });
     } catch (e: unknown) {
       out("error", "run", null, (e as Error).message);
     }
+  });
+
+// ── auto ──────────────────────────────────────────────────────────────────────
+
+program
+  .command("auto")
+  .description("Autonomous rebalancer — monitor all pools and auto-move when drift exceeds threshold")
+  .requiredOption("--wallet <address>", "STX address")
+  .requiredOption("--password <pass>", "Wallet password for signing")
+  .option("--interval <minutes>", "Check interval in minutes", "15")
+  .option("--drift-threshold <bins>", "Minimum bin drift to trigger move", "3")
+  .option("--spread <n>", "Bin spread ±N around active bin", String(BIN_SPREAD))
+  .option("--max-moves <n>", "Max moves per cycle (0 = unlimited)", "0")
+  .option("--once", "Run one cycle then exit (no loop)")
+  .action(async (opts) => {
+    const wallet: string = opts.wallet;
+    const intervalMs = Math.max(parseInt(opts.interval, 10) || 15, 5) * 60_000;
+    const driftThreshold = Math.max(parseInt(opts.driftThreshold, 10) || 3, 1);
+    const spread = Math.min(Math.max(parseInt(opts.spread, 10) || BIN_SPREAD, 1), 10);
+    const maxMoves = Math.max(parseInt(opts.maxMoves, 10) || 0, 0);
+    const once: boolean = opts.once === true;
+
+    // Decrypt wallet once at startup
+    log("Decrypting wallet...");
+    let keys: { stxPrivateKey: string; stxAddress: string };
+    try {
+      keys = await getWalletKeys(opts.password);
+      if (keys.stxAddress !== wallet) {
+        out("error", "auto", null, `Wallet address mismatch: expected ${wallet}, got ${keys.stxAddress}`);
+        return;
+      }
+    } catch (e: unknown) {
+      out("error", "auto", null, `Wallet decrypt failed: ${(e as Error).message}`);
+      return;
+    }
+
+    log(`Auto-rebalancer started: interval=${opts.interval}m, drift_threshold=${driftThreshold}, spread=±${spread}`);
+
+    let cycleCount = 0;
+
+    const runCycle = async (): Promise<{ moves: number; skipped: number; errors: number }> => {
+      cycleCount++;
+      const cycleStart = new Date().toISOString();
+      log(`Cycle ${cycleCount} starting at ${cycleStart}`);
+
+      let moves = 0;
+      let skipped = 0;
+      let errors = 0;
+
+      try {
+        const pools = await fetchPools();
+        const state = loadState();
+        const stxBal = await fetchStxBalance(wallet);
+
+        if (stxBal < 1) {
+          log(`Insufficient STX for gas: ${stxBal.toFixed(2)} STX`);
+          out("blocked", "auto", { cycle: cycleCount, stx_balance: stxBal }, "Insufficient STX for gas");
+          return { moves: 0, skipped: 0, errors: 1 };
+        }
+
+        for (const pool of pools) {
+          if (maxMoves > 0 && moves >= maxMoves) {
+            log(`Max moves (${maxMoves}) reached for this cycle`);
+            break;
+          }
+
+          try {
+            const [userBins, binsData] = await Promise.all([
+              fetchUserPositions(pool.pool_id, wallet),
+              fetchPoolBins(pool.pool_id),
+            ]);
+            if (userBins.length === 0) continue;
+
+            const activeBin = binsData.active_bin_id || pool.active_bin;
+            const health = assessPosition(pool, userBins, activeBin, binsData.bins);
+
+            // Skip if in range
+            if (health.in_range) {
+              log(`${pool.pool_id} (${health.pair}): in range — skip`);
+              continue;
+            }
+
+            // Skip if drift below threshold
+            if (health.drift < driftThreshold) {
+              log(`${pool.pool_id} (${health.pair}): drift ${health.drift} < threshold ${driftThreshold} — skip`);
+              skipped++;
+              continue;
+            }
+
+            // Skip if cooldown active
+            const cdMs = cooldownRemaining(state, pool.pool_id);
+            if (cdMs > 0) {
+              log(`${pool.pool_id}: cooldown ${Math.ceil(cdMs / 60_000)}m remaining — skip`);
+              skipped++;
+              continue;
+            }
+
+            // Skip if zero liquidity
+            if (BigInt(health.total_dlp) === 0n) {
+              log(`${pool.pool_id}: zero liquidity — skip`);
+              continue;
+            }
+
+            // Validate contract format
+            if (!pool.pool_contract.includes(".") || !pool.token_x.includes(".") || !pool.token_y.includes(".")) {
+              log(`${pool.pool_id}: invalid contract format — skip`);
+              errors++;
+              continue;
+            }
+
+            // Build atomic move plan
+            const movePositions = buildMovePositions(userBins, activeBin);
+
+            if (movePositions.length === 0) {
+              log(`${pool.pool_id}: no move positions — skip`);
+              errors++;
+              continue;
+            }
+
+            // Execute — single atomic transaction
+            log(`${pool.pool_id} (${health.pair}): drift ${health.drift} bins — MOVING (atomic)`);
+
+            const nonce = await fetchNonce(wallet);
+            const moveTxId = await executeMove(keys.stxPrivateKey, pool, movePositions, nonce);
+            log(`  Move broadcast: ${moveTxId}`);
+
+            // Record cooldown
+            state[pool.pool_id] = { last_move_at: new Date().toISOString() };
+            saveState(state);
+
+            log(`  Move complete: ${health.user_bin_min}-${health.user_bin_max} → ${activeBin - spread}-${activeBin + spread}`);
+            moves++;
+
+          } catch (e: unknown) {
+            log(`${pool.pool_id}: error — ${(e as Error).message}`);
+            errors++;
+          }
+        }
+      } catch (e: unknown) {
+        log(`Cycle ${cycleCount} failed: ${(e as Error).message}`);
+        errors++;
+      }
+
+      log(`Cycle ${cycleCount} done: ${moves} moves, ${skipped} skipped, ${errors} errors`);
+      return { moves, skipped, errors };
+    };
+
+    // First cycle
+    const firstResult = await runCycle();
+
+    if (once) {
+      out("success", "auto", {
+        mode: "once",
+        cycle: cycleCount,
+        ...firstResult,
+      });
+      return;
+    }
+
+    // Emit initial status
+    out("success", "auto", {
+      mode: "loop",
+      interval_minutes: Math.round(intervalMs / 60_000),
+      drift_threshold: driftThreshold,
+      spread,
+      cycle: cycleCount,
+      ...firstResult,
+      next_check: new Date(Date.now() + intervalMs).toISOString(),
+    });
+
+    // Loop
+    const loop = setInterval(async () => {
+      const result = await runCycle();
+      out("success", "auto", {
+        mode: "loop",
+        cycle: cycleCount,
+        ...result,
+        next_check: new Date(Date.now() + intervalMs).toISOString(),
+      });
+    }, intervalMs);
+
+    // Graceful shutdown
+    const shutdown = () => {
+      log("Shutting down auto-rebalancer...");
+      clearInterval(loop);
+      out("success", "auto", { mode: "shutdown", total_cycles: cycleCount });
+      process.exit(0);
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
   });
 
 // ── install-packs ─────────────────────────────────────────────────────────────

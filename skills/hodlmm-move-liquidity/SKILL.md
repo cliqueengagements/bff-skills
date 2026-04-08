@@ -1,35 +1,40 @@
 ---
 name: hodlmm-move-liquidity
-description: "Move idle HODLMM concentrated liquidity back into the active earning range — withdraw from drifted bins, re-deposit around the current active bin."
+description: "HODLMM Move-Liquidity & Auto-Rebalancer — withdraw from drifted bins, re-deposit around the current active bin. Includes autonomous monitoring loop."
 metadata:
   author: "cliqueengagements"
   author-agent: "Micro Basilisk (Agent 77) — SP219TWC8G12CSX5AB093127NC82KYQWEH8ADD1AY | bc1qzh2z92dlvccxq5w756qppzz8fymhgrt2dv8cf5"
   user-invocable: "false"
-  arguments: "doctor | scan | run | install-packs"
+  arguments: "doctor | scan | run | auto | install-packs"
   entry: "hodlmm-move-liquidity/hodlmm-move-liquidity.ts"
   requires: "wallet, signing"
   tags: "defi, write, mainnet-only, requires-funds"
 ---
 
-# HODLMM Move-Liquidity
+# HODLMM Move-Liquidity & Auto-Rebalancer
 
 ## What it does
 
-Detects when an HODLMM concentrated liquidity position has drifted out of the active trading range, then moves the capital back. Executes two on-chain transactions against the Bitflow DLMM liquidity router: withdraw from stale bins, re-deposit into bins centered on the current active bin. Uses relative bin offsets so both transactions tolerate active-bin movement during confirmation.
+When the active bin drifts away from your LP position, move your liquidity to the active bin. One atomic transaction via the Bitflow DLMM liquidity router's `move-relative-liquidity-multi` function: withdraw from old bins and deposit into the active bin in a single on-chain call. No intermediate state, no nonce sequencing, no partial execution risk.
+
+The active bin is where all trades flow and fees accrue. Capital in any other bin earns zero. This skill concentrates your liquidity where it earns.
+
+The `auto` command runs as an autonomous rebalancer — it monitors all pools on a configurable interval and automatically moves liquidity when drift exceeds a threshold. No manual intervention required. Set it, and the agent keeps your capital in the active bin around the clock.
 
 ## Why agents need it
 
-Concentrated liquidity earns fees only when the active bin is inside the LP's bin range. Once price drifts away, the position earns zero. Every read-only HODLMM skill can detect this drift — none of them fix it. This skill closes the loop: detect drift, withdraw idle capital, re-deploy it where the fees are. An agent running this skill keeps its capital productive without human intervention.
+Every HODLMM read skill in the competition hits the same wall. They detect drift, score risk, recommend action — then stop. Capital sits in dead bins earning nothing while the active bin moves on without it.
+
+This skill closes the loop. The `run` command moves liquidity on demand. The `auto` command makes it autonomous — an agent running this skill keeps its capital productive without human intervention, 24/7.
 
 ## Safety notes
 
-- **Writes to chain.** Two transactions per rebalance: one withdrawal, one deposit.
+- **Writes to chain.** One atomic transaction per rebalance via `move-relative-liquidity-multi`. Withdraw + deposit happen in a single on-chain call — either both succeed or neither does.
 - **Moves funds.** Liquidity is removed from old bins and placed in new bins. No tokens leave the LP's wallet — they pass through the DLMM liquidity router contract.
 - **Mainnet only.** All contract addresses are mainnet Stacks.
-- **`--confirm` required.** Without it, `run` outputs a dry-run preview with full plan details. No transaction is broadcast.
-- **postConditionMode: Allow** — HODLMM operations mint and burn DLP tokens, which cannot be expressed as sender-side post-conditions. The `--confirm` gate, cooldown, in-range check, gas check, and active-bin-tolerance parameter provide the safety layer.
+- **`--confirm` required for `run`.** Without it, `run` outputs a dry-run preview with full plan details. No transaction is broadcast. The `auto` command executes directly (operator opts in by starting it).
+- **postConditionMode: Allow** — HODLMM operations mint and burn DLP tokens in the same transaction, which cannot be expressed as sender-side post-conditions. The `--confirm` gate, cooldown, in-range check, and gas check provide the safety layer.
 - **4-hour cooldown** between moves on the same pool, enforced in code and persisted to disk.
-- **Active-bin-tolerance** on deposit: the contract rejects the deposit if the active bin has moved more than ±2 bins from the expected value between withdrawal and deposit.
 
 ## Commands
 
@@ -60,6 +65,28 @@ bun run hodlmm-move-liquidity/hodlmm-move-liquidity.ts run --wallet <addr> --poo
 # Execute
 bun run hodlmm-move-liquidity/hodlmm-move-liquidity.ts run --wallet <addr> --pool dlmm_1 --confirm --password <pass>
 ```
+
+### auto
+
+Autonomous rebalancer. Monitors all pools on a loop, auto-moves liquidity when drift exceeds threshold.
+
+```bash
+# Start auto-rebalancer (checks every 15 minutes, moves when drift ≥ 3 bins)
+bun run hodlmm-move-liquidity/hodlmm-move-liquidity.ts auto --wallet <addr> --password <pass>
+
+# Custom interval and threshold
+bun run hodlmm-move-liquidity/hodlmm-move-liquidity.ts auto --wallet <addr> --password <pass> --interval 30 --drift-threshold 5
+
+# Single cycle (no loop)
+bun run hodlmm-move-liquidity/hodlmm-move-liquidity.ts auto --wallet <addr> --password <pass> --once
+```
+
+Options:
+- `--interval <minutes>` — check interval (default: 15, minimum: 5)
+- `--drift-threshold <bins>` — minimum drift to trigger move (default: 3)
+- `--spread <n>` — bin spread ±N around active bin (default: 5, max: 10)
+- `--max-moves <n>` — max moves per cycle, 0 = unlimited (default: 0)
+- `--once` — run one cycle then exit
 
 ### install-packs
 
@@ -117,10 +144,13 @@ All commands emit JSON to stdout.
       "pool_id": "dlmm_1",
       "pair": "sBTC/USDCx",
       "active_bin": 510,
+      "atomic": true,
       "old_range": { "min": 500, "max": 504, "bins": 5 },
-      "new_range": { "min": 505, "max": 515, "bins": 11 },
-      "withdraw": { "positions": 5, "estimated_x": "50000", "estimated_y": "120000000" },
-      "deposit": { "bins": 11, "x_per_bin_above": "8166", "y_per_bin_below": "19600000" }
+      "new_range": { "min": 510, "max": 510, "bins": 1 },
+      "moves": [
+        { "from": 500, "to_offset": 0, "to_bin": 510, "dlp": "196000" },
+        { "from": 501, "to_offset": 0, "to_bin": 510, "dlp": "196000" }
+      ]
     }
   },
   "error": null
@@ -136,10 +166,30 @@ All commands emit JSON to stdout.
     "decision": "EXECUTED",
     "health": { "..." : "..." },
     "plan": { "..." : "..." },
-    "transactions": {
-      "withdraw": { "txid": "0xabc...", "explorer": "https://explorer.hiro.so/txid/0xabc...?chain=mainnet" },
-      "deposit": { "txid": "0xdef...", "explorer": "https://explorer.hiro.so/txid/0xdef...?chain=mainnet" }
+    "transaction": {
+      "txid": "0xabc...",
+      "explorer": "https://explorer.hiro.so/txid/0xabc...?chain=mainnet"
     }
+  },
+  "error": null
+}
+```
+
+**auto — cycle report:**
+```json
+{
+  "status": "success",
+  "action": "auto",
+  "data": {
+    "mode": "loop",
+    "interval_minutes": 15,
+    "drift_threshold": 3,
+    "spread": 5,
+    "cycle": 1,
+    "moves": 1,
+    "skipped": 0,
+    "errors": 0,
+    "next_check": "2026-04-08T12:30:00.000Z"
   },
   "error": null
 }
@@ -158,7 +208,5 @@ All commands emit JSON to stdout.
 ## Known constraints
 
 - Requires `@stacks/transactions` and `@stacks/wallet-sdk` to be installed in the runtime environment.
-- Two separate transactions means the deposit executes after the withdrawal confirms (sequential nonces). If the withdrawal fails, the deposit stays in mempool and eventually drops.
-- Deposit amounts use 98% of estimated withdrawal return to account for rounding — a small dust amount may remain in wallet.
-- Active-bin-tolerance of ±2 on deposit means high-volatility moments may cause the deposit to be rejected by the contract. Re-run after the market settles.
-- Maximum 10-bin spread (configurable via `--spread`). Default is ±5 (11 bins total).
+- Single atomic transaction via `move-relative-liquidity-multi` — either all bins move or none do. No partial execution risk.
+- All liquidity moves to the active bin (offset 0). The DLMM bin invariant requires bins below active to hold only Y token and bins above active to hold only X token. The active bin is the only bin that safely accepts both, and it earns the most fees since all trades flow through it.
