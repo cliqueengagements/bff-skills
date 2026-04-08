@@ -46,8 +46,13 @@ const SBTC_FT_KEY = `${SBTC_TOKEN}::sbtc-token`;
 // Zest Protocol v2 contracts
 const ZEST_POOL_BORROW = "SP2VCQJGH7PHP2DJK7Z0V48AGBHQAW3R3ZW1QF4N.pool-borrow-v2-3";
 
-// HODLMM pools (sBTC pairs)
+// HODLMM pools (sBTC pairs) — contracts verified in knowledge-base.md
 const HODLMM_SBTC_POOLS = ["dlmm_1", "dlmm_2", "dlmm_6"] as const;
+const HODLMM_POOL_CONTRACTS: Record<string, string> = {
+  dlmm_1: "dlmm-pool-sbtc-usdcx-v-1-bps-10",
+  dlmm_2: "dlmm-pool-sbtc-usdcx-v-1-bps-1",
+  dlmm_6: "dlmm-pool-stx-sbtc-v-1-bps-15",
+};
 
 // Safety limits
 const MAX_EXECUTE_SBTC_SATS = 500_000;   // 0.005 BTC max per execute
@@ -1187,11 +1192,17 @@ async function cmdExecute(wallet: string, confirm: boolean, amount?: string): Pr
   } else if (target.protocol === "hodlmm") {
     mcp_commands.push({
       step: 1,
-      tool: "bitflow_hodlmm_add_liquidity",
-      description: `Add ${deployDesc} to HODLMM pool ${target.pool}`,
+      tool: "call_contract",
+      description: `Add ${deployDesc} to HODLMM pool ${target.pool} via DLMM router`,
       params: {
-        pool_id: target.pool,
-        amount_sats: perIntervalSats,
+        contractAddress: "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD",
+        contractName: "dlmm-liquidity-router-v-1-1",
+        functionName: "add-relative-liquidity-multi",
+        functionArgs: "_agent_must_compute: call scan to get active bin, then build position tuples with active-bin-id-offset, x-amount, y-amount, min-dlp (≥95% of amount), max-x-liquidity-fee (≤5%), max-y-liquidity-fee (≤5%), pool-trait, x-token-trait, y-token-trait",
+        _pool_contract: `SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.${HODLMM_POOL_CONTRACTS[target.pool] ?? "unknown"}`,
+        _amount_sats: perIntervalSats,
+        _safety: "min-dlp ≥ 95% of amount, max fees ≤ 5% — NEVER set min-dlp=1 or max-fee=100%",
+        postConditionMode: "deny",
       },
       auto_execute: false,
     });
