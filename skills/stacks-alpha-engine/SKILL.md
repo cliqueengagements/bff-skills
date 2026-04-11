@@ -45,17 +45,34 @@ No other skill covers all 4 Stacks DeFi protocols with working read AND write pa
 - **Granite aeUSDC deposit**: `liquidity-provider-v1.deposit` — [`205bf3f1...`](https://explorer.hiro.so/txid/205bf3f135c5f1cddd8323c1a1a054f3a63ac81904c4244a763b0ce4b26c3352?chain=mainnet) (block 7,512,722)
 - **HODLMM add-liquidity**: [`f2ffb41e...`](https://explorer.hiro.so/txid/f2ffb41e1f29a5c5ee5fa0df628a700e21bf14a4aabbd334b5f49b98bab9e315?chain=mainnet) — dlmm-liquidity-router (block 7,423,687)
 
-## Safety notes
+## Safety Model
 
-- Every write command runs the full safety pipeline: Scout (read state) -> PoR (verify sBTC backing) -> Guardian (6 gates) -> Executor. No gate can be skipped.
-- PoR RED or DATA_UNAVAILABLE blocks ALL writes and suggests emergency withdrawal.
-- PoR YELLOW blocks all writes (read-only mode).
-- Guardian gates: HODLMM pool-vs-market divergence <=0.5%, 24h volume >=$10K, gas <=50 STX, 4h rebalance cooldown, price source availability.
-- Swap slippage budget (min-received on DLMM swaps): stable→stable 0.5%, volatile 3%. Configurable per-call. These are independent of the guardian divergence gate (which checks a different pool).
-- Crypto self-test failure (bech32m vectors or P2TR derivation) blocks ALL operations including reads.
-- YTG (Yield-to-Gas) profit gate: blocks deploys where 7-day projected yield < 3x gas cost. Use `--force` to override.
-- All write commands require `--confirm` to execute. Without it, a dry-run preview is returned.
-- `postConditionMode: "allow"` on deposit/stake/unstake/swap paths — required because these operations mint LP tokens, sUSDh, or burn sUSDh, which cannot be expressed as sender-side post-conditions. Guardian gates (divergence, volume, gas, cooldown) and `--confirm` dry-run provide the safety layer instead.
+Stacks Alpha Engine uses a **defense-in-depth** approach. Stacks post-conditions are the standard safety mechanism, but DeFi operations that mint or burn tokens (LP shares, sUSDh) cannot be expressed as sender-side post-conditions. The engine compensates with layered gates that must all pass before any write executes.
+
+### Why `postConditionMode: "allow"`
+
+Deposit, stake, unstake, and swap paths use `postConditionMode: "allow"` because:
+
+| Operation | Why `deny` mode is impossible |
+|-----------|-------------------------------|
+| Hermetica stake | Mints sUSDh back to caller — mint is not a sender-side transfer |
+| Hermetica unstake | Burns sUSDh and creates a claim — burn is not expressible as sender post-condition |
+| Granite deposit | Mints LP tokens back to caller — same mint issue |
+| DLMM swap | Router may touch intermediate pools — sender can't predict exact hops |
+
+Where `deny` mode IS possible, the engine uses it. Granite `redeem` has explicit post-conditions: `lte` cap on pool outflow + `gte: "1"` floor on wallet receive.
+
+### What provides safety instead
+
+1. **`--confirm` dry-run gate** — every write command returns a preview without `--confirm`. No transaction is emitted until the agent explicitly opts in.
+2. **Guardian (6 gates)** — pool-vs-market divergence <=0.5%, 24h volume >=$10K, gas <=50 STX, 4h rebalance cooldown, relay health, price source availability. Any failure blocks the write.
+3. **PoR (Proof of Reserve)** — sBTC reserve ratio check. YELLOW (99.5-99.9%) blocks all writes. RED (<99.5%) triggers emergency withdrawal recommendation.
+4. **YTG profit gate** — blocks deploys where 7-day projected yield < 3x gas cost.
+5. **Crypto self-test** — bech32m vectors + P2TR derivation must pass before any operation, including reads.
+
+### Additional safety notes
+
+- Swap slippage budget (min-received on DLMM swaps): stable→stable 0.5%, volatile 3%. Configurable per-call. Independent of the guardian divergence gate.
 - Hermetica unstake has 7-day cooldown — engine warns and provides claim instructions.
 - Granite LP accepts **aeUSDC only** (not sBTC). Engine correctly routes aeUSDC to Granite.
 - Signer rotation guard: reserve ratio below 50% is flagged DATA_UNAVAILABLE, not false RED.
