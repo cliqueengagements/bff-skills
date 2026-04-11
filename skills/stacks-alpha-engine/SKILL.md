@@ -45,7 +45,7 @@ No other skill covers all 4 Stacks DeFi protocols with working read AND write pa
 - **Granite aeUSDC deposit**: `liquidity-provider-v1.deposit` — [`205bf3f1...`](https://explorer.hiro.so/txid/205bf3f135c5f1cddd8323c1a1a054f3a63ac81904c4244a763b0ce4b26c3352?chain=mainnet) (block 7,512,722)
 - **HODLMM add-liquidity**: [`f2ffb41e...`](https://explorer.hiro.so/txid/f2ffb41e1f29a5c5ee5fa0df628a700e21bf14a4aabbd334b5f49b98bab9e315?chain=mainnet) — dlmm-liquidity-router (block 7,423,687)
 
-## Safety Model
+## Safety notes
 
 Stacks Alpha Engine uses a **defense-in-depth** approach. Stacks post-conditions are the standard safety mechanism, but DeFi operations that mint or burn tokens (LP shares, sUSDh) cannot be expressed as sender-side post-conditions. The engine compensates with layered gates that must all pass before any write executes.
 
