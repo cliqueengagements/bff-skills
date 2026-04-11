@@ -1151,6 +1151,11 @@ function buildDeployInstructions(protocol: Protocol, amount: number, token: stri
             functionName: "stake",
             functionArgs: [{ type: "uint", value: amount }, null],
             postConditionMode: "allow",
+            // allow mode required: staking mints sUSDh back to caller (not expressible as sender-side PC).
+            // Belt-and-suspenders: outgoing USDh transfer is still asserted.
+            postConditions: [
+              { type: "ft", principal: wallet, asset: USDH_TOKEN, assetName: "usdh-token", conditionCode: "lte", amount },
+            ],
           },
           description: `Stake ${amount} USDh into Hermetica sUSDh (earning yield)`,
         });
@@ -1173,6 +1178,11 @@ function buildDeployInstructions(protocol: Protocol, amount: number, token: stri
             functionName: "stake",
             functionArgs: [{ type: "uint", value: hermeticaEstimate }, null],
             postConditionMode: "allow",
+            // allow mode required: staking mints sUSDh (not expressible as sender-side PC).
+            // Belt-and-suspenders: outgoing USDh transfer is still asserted.
+            postConditions: [
+              { type: "ft", principal: wallet, asset: USDH_TOKEN, assetName: "usdh-token", conditionCode: "lte", amount: hermeticaEstimate },
+            ],
             _note: "SEQUENTIAL: execute after Step 1 confirms. Replace amount with actual swap output from tx receipt.",
           },
           description: `Step 2: Stake ~${hermeticaEstimate} USDh into Hermetica sUSDh (adjust amount from Step 1 output)`,
@@ -1197,6 +1207,11 @@ function buildDeployInstructions(protocol: Protocol, amount: number, token: stri
               { type: "principal", value: wallet },
             ],
             postConditionMode: "allow",
+            // allow mode required: deposit mints LP tokens back to caller (not expressible as sender-side PC).
+            // Belt-and-suspenders: outgoing aeUSDC transfer is still asserted.
+            postConditions: [
+              { type: "ft", principal: wallet, asset: AEUSDC_TOKEN, assetName: "bridged-usdc", conditionCode: "lte", amount },
+            ],
           },
           description: `Deposit ${amount} aeUSDC to Granite lending pool`,
         });
@@ -1222,6 +1237,11 @@ function buildDeployInstructions(protocol: Protocol, amount: number, token: stri
               { type: "principal", value: wallet },
             ],
             postConditionMode: "allow",
+            // allow mode required: deposit mints LP tokens (not expressible as sender-side PC).
+            // Belt-and-suspenders: outgoing aeUSDC transfer is still asserted.
+            postConditions: [
+              { type: "ft", principal: wallet, asset: AEUSDC_TOKEN, assetName: "bridged-usdc", conditionCode: "lte", amount: graniteEstimate },
+            ],
             _note: "SEQUENTIAL: execute after Step 1 confirms. Replace amount with actual swap output from tx receipt.",
           },
           description: `Step 2: Deposit ~${graniteEstimate} aeUSDC to Granite lending pool (adjust amount from Step 1 output)`,
@@ -1276,6 +1296,11 @@ function buildWithdrawInstructions(protocol: Protocol, scout: ScoutResult): Exec
             functionName: "unstake",
             functionArgs: [{ type: "uint", value: susdhSats }],
             postConditionMode: "allow",
+            // allow mode required: unstake burns sUSDh and creates a claim (not expressible as sender-side PC).
+            // Belt-and-suspenders: outgoing sUSDh transfer is still asserted.
+            postConditions: [
+              { type: "ft", principal: wallet, asset: SUSDH_TOKEN, assetName: "susdh-token", conditionCode: "lte", amount: String(susdhSats) },
+            ],
           },
           description: `Unstake ${susdhSats} sUSDh (creates claim in staking-silo)`,
         },
