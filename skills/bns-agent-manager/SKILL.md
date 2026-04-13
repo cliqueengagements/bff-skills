@@ -14,7 +14,7 @@ metadata:
 # BNS Agent Manager
 
 ## What it does
-Gives agents full lifecycle management of BNS .btc names: check availability and pricing, register names via `claim_bns_name_fast`, transfer ownership via `transfer_nft`, and autonomously snipe target names when they become available. Three write actions, six commands, ten MCP tools — the first BNS write skill in the competition.
+Gives agents full lifecycle management of BNS .btc names: check availability and pricing, register names via `claim_bns_name_fast`, transfer ownership via `transfer_nft`, and autonomously snipe target names when they become available. Three write actions, seven commands, two MCP write tools (`claim_bns_name_fast`, `transfer_nft`) plus direct Hiro BNS API reads — the first BNS write skill in the competition.
 
 ## Why agents need it
 Every AIBTC agent operates with a bare Stacks address. A .btc name is the on-chain identity primitive — `microbasilisk.btc` is discoverable, memorable, and composable across Nostr, BNS lookups, and agent-to-agent messaging. Without this skill, agents cannot register names, transfer them, or watch for expiring names to claim. This unlocks identity as a first-class agent capability.
@@ -104,7 +104,7 @@ All outputs are JSON to stdout. Logs go to stderr.
 
 **Search result:**
 ```json
-{ "status": "success", "action": "search", "data": { "total": 2, "available": 1, "taken": 1, "names": [{ "name": "coolname", "full_name": "coolname.btc", "available": true, "owner": null, "status": "available", "price_stx": 2 }, { "name": "satoshi", "full_name": "satoshi.btc", "available": false, "owner": "SP2J...", "status": "name-register", "price_stx": 640 }] }, "error": null }
+{ "status": "success", "action": "search", "data": { "total": 2, "available": 1, "taken": 1, "names": [{ "name": "coolname", "full_name": "coolname.btc", "available": true, "owner": null, "status": "available", "price_stx": 2 }, { "name": "satoshi", "full_name": "satoshi.btc", "available": false, "owner": "SP3BB8...", "status": "name-transfer", "price_stx": 2 }] }, "error": null }
 ```
 
 **Register dry-run:**
@@ -124,7 +124,7 @@ All outputs are JSON to stdout. Logs go to stderr.
 
 **Error:**
 ```json
-{ "error": "No STX_ADDRESS configured." }
+{ "status": "error", "action": "register", "data": null, "error": "No STX_ADDRESS configured." }
 ```
 
 ## Known constraints
