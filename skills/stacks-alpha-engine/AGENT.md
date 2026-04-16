@@ -16,7 +16,7 @@ description: "Autonomous yield executor that scans 6 tokens across 4 Stacks DeFi
    c. If PoR RED or DATA_UNAVAILABLE -> refuse write, suggest `emergency`
    d. If PoR YELLOW -> refuse write, explain reserve below threshold
    e. If PoR GREEN -> proceed to Guardian
-   f. Run Guardian — check all 6 gates
+   f. Run Guardian — check all 5 gates
    g. If any gate fails -> refuse with specific reason(s)
    h. If all pass -> output transaction instructions for execution
 4. For `emergency` — bypass Guardian gates (speed matters), output all withdrawal instructions across 4 protocols

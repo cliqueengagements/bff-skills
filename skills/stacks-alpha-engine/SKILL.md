@@ -15,7 +15,7 @@ metadata:
 
 ## What it does
 
-Cross-protocol yield executor covering **all 4 major Stacks DeFi protocols** — Zest v2, Hermetica, Granite, and HODLMM (Bitflow DLMM). Scans 6 tokens (sBTC, STX, USDCx, USDh, sUSDh, aeUSDC) across the wallet, reads positions and live yields from all 4 protocols, maps yield opportunities into 3 tiers (deploy now / swap first / acquire to unlock) with **YTG (Yield-to-Gas) profitability ratios**, verifies sBTC reserve integrity via BIP-341 P2TR derivation, checks 6 market safety gates + YTG profit gate, then executes deploy/withdraw/rebalance/migrate/emergency operations. Every write runs a mandatory safety pipeline: Scout -> Reserve -> Guardian -> YTG -> Executor. No bypasses.
+Cross-protocol yield executor covering **all 4 major Stacks DeFi protocols** — Zest v2, Hermetica, Granite, and HODLMM (Bitflow DLMM). Scans 6 tokens (sBTC, STX, USDCx, USDh, sUSDh, aeUSDC) across the wallet, reads positions and live yields from all 4 protocols, maps yield opportunities into 3 tiers (deploy now / swap first / acquire to unlock) with **YTG (Yield-to-Gas) profitability ratios**, verifies sBTC reserve integrity via BIP-341 P2TR derivation, checks 5 market safety gates + YTG profit gate, then executes deploy/withdraw/rebalance/migrate/emergency operations. Every write runs a mandatory safety pipeline: Scout -> Reserve -> Guardian -> YTG -> Executor. No bypasses.
 
 **Protocol coverage:**
 
@@ -65,7 +65,7 @@ Where `deny` mode IS possible, the engine uses it. Granite `redeem` has explicit
 ### What provides safety instead
 
 1. **`--confirm` dry-run gate** — every write command returns a preview without `--confirm`. No transaction is emitted until the agent explicitly opts in.
-2. **Guardian (6 gates)** — pool-vs-market divergence <=0.5%, 24h volume >=$10K, gas <=50 STX, 4h rebalance cooldown, relay health, price source availability. Any failure blocks the write.
+2. **Guardian (5 gates)** — pool-vs-market divergence <=0.5%, 24h volume >=$10K, gas <=50 STX, 4h rebalance cooldown, price source availability. Relay health is checked at the MCP runtime layer. Any gate failure blocks the write.
 3. **PoR (Proof of Reserve)** — sBTC reserve ratio check. YELLOW (99.5-99.9%) blocks all writes. RED (<99.5%) triggers emergency withdrawal recommendation.
 4. **YTG profit gate** — blocks deploys where 7-day projected yield < 3x gas cost.
 5. **Crypto self-test** — bech32m vectors + P2TR derivation must pass before any operation, including reads.
@@ -88,7 +88,7 @@ All commands output JSON to stdout:
   "command": "scan" | "deploy" | "withdraw" | "rebalance" | "migrate" | "emergency",
   "scout": { "status", "wallet", "balances" (6 tokens), "positions" (4 protocols), "options" (3-tier, each with ytg_ratio + ytg_profitable), "best_move", "break_prices", "data_sources" },
   "reserve": { "signal": "GREEN|YELLOW|RED|DATA_UNAVAILABLE", "reserve_ratio", "score", "sbtc_circulating", "btc_reserve", "signer_address", "recommendation" },
-  "guardian": { "can_proceed", "refusals", "slippage", "volume", "gas", "cooldown", "relay", "prices" },
+  "guardian": { "can_proceed", "refusals", "slippage", "volume", "gas", "cooldown", "prices" },
   "action": { "description", "txids", "details": { "instructions": [...] } },
   "refusal_reasons": ["..."],
   "error": "..."
@@ -101,7 +101,7 @@ All commands output JSON to stdout:
 |--------|------|
 | **Scout** | Wallet scan (6 tokens), positions (4 protocols), 3-tier yield options, break prices |
 | **Reserve** | P2TR derivation, BTC balance, GREEN/YELLOW/RED signal |
-| **Guardian** | Slippage, volume, gas, cooldown, relay, price gates |
+| **Guardian** | Slippage, volume, gas, cooldown, price gates |
 | **Executor** | deploy, withdraw, rebalance, migrate, emergency |
 
 ## Commands
@@ -131,7 +131,7 @@ All 4 protocols have **zero trait_reference** requirements in their write paths.
 
 1. **Scout** reads wallet (6 tokens) + 4 protocols + yields + prices + YTG ratios
 2. **Reserve (PoR)** verifies sBTC is fully backed by real BTC
-3. **Guardian** checks 6 gates: pool-vs-market divergence (<=0.5%), volume (>=$10K), gas (<=50 STX), cooldown (4h), relay, prices
+3. **Guardian** checks 5 gates: pool-vs-market divergence (<=0.5%), volume (>=$10K), gas (<=50 STX), cooldown (4h), prices. Relay health deferred to MCP runtime.
 4. **YTG gate** checks 7d projected yield > 3x gas cost (refuses unprofitable deploys)
 5. All pass -> **Executor** outputs transaction instructions
 6. Any fail -> refuse with specific reasons, no transaction

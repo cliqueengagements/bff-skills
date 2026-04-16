@@ -51,6 +51,7 @@ const MAX_SLIPPAGE_PCT    = 0.5;
 const MAX_GAS_STX         = 50;
 const COOLDOWN_HOURS      = 4;
 const PRICE_SCALE         = 1e8;
+const BIN_PRICE_SCALE     = 1e6;  // HODLMM bin price precision
 const STATE_FILE          = join(homedir(), ".stacks-alpha-engine-state.json");
 
 // PoR thresholds
@@ -167,7 +168,6 @@ interface GuardianResult {
   volume: { ok: boolean; usd: number };
   gas: { ok: boolean; estimated_stx: number };
   cooldown: { ok: boolean; remaining_hours: number };
-  relay: { ok: boolean; detail: string };
   prices: { ok: boolean; detail: string };
 }
 
@@ -431,7 +431,7 @@ async function scoutWallet(wallet: string): Promise<ScoutResult> {
   const sd = (teneroSbtc as Record<string, Record<string, unknown>>)?.data as Record<string, unknown> | undefined;
   const sbtcPrice = (sd?.price_usd as number) ?? ((sd?.price as Record<string, number>)?.current_price) ?? 0;
   const xd = (teneroStx as Record<string, Record<string, unknown>>)?.data as Record<string, unknown> | undefined;
-  const stxPrice = (xd?.price_usd as number) ?? ((xd?.price as Record<string, number>)?.current_price) ?? 0.216;
+  const stxPrice = (xd?.price_usd as number) ?? ((xd?.price as Record<string, number>)?.current_price) ?? 0;
   // Stablecoins pegged at $1
   const usdhPrice = 1.0;
   const aeUsdcPrice = 1.0;
@@ -459,6 +459,13 @@ async function scoutWallet(wallet: string): Promise<ScoutResult> {
     scoutZest(wallet), scoutHermetica(wallet), scoutGranite(wallet), scoutHodlmm(wallet),
   ]);
   allSources.push(...zest.sources, ...hermetica.sources, ...granite.sources, ...hodlmm.sources);
+
+  // -- Fix Hermetica has_position from wallet sUSDh balance -------------------
+  if (balances.susdh.amount > 0) {
+    hermetica.position.has_position = true;
+    hermetica.position.susdh_balance = balances.susdh.amount;
+    hermetica.position.detail = `${balances.susdh.amount} sUSDh staked (rate: ${hermetica.position.exchange_rate})`;
+  }
 
   // -- Yield options (3-tier) -------------------------------------------------
   const { options, sources: optSrc } = await getYieldOptions(balances, prices, granite.position, hermetica.position);
@@ -863,8 +870,8 @@ async function getBreakPrices(hodlmm: HodlmmPositions, sbtcPrice: number): Promi
               callReadOnly(DLMM_CORE, "get-bin-price", [cvUint(initPrice), cvUint(binStep), toInt128(lowS)]),
               callReadOnly(DLMM_CORE, "get-bin-price", [cvUint(initPrice), cvUint(binStep), toInt128(highS)]),
             ]);
-            if (lr.okay && lr.result) { rangeLow = round(Number(parseUint128Hex(lr.result)) / 1e6, 2); sources.push("hodlmm-bin-price-low"); }
-            if (hr.okay && hr.result) { rangeHigh = round(Number(parseUint128Hex(hr.result)) / 1e6, 2); sources.push("hodlmm-bin-price-high"); }
+            if (lr.okay && lr.result) { rangeLow = round(Number(parseUint128Hex(lr.result)) / BIN_PRICE_SCALE, 2); sources.push("hodlmm-bin-price-low"); }
+            if (hr.okay && hr.result) { rangeHigh = round(Number(parseUint128Hex(hr.result)) / BIN_PRICE_SCALE, 2); sources.push("hodlmm-bin-price-high"); }
           }
         }
       }
@@ -1022,9 +1029,8 @@ async function checkGuardian(scout: ScoutResult): Promise<GuardianResult> {
     if (!cooldownOk) refusals.push(`Cooldown: ${cooldownRemaining}h remaining`);
   }
 
-  // 6. Relay health
-  const relayOk = true;
-  const relayDetail = "relay check deferred to MCP runtime";
+  // Note: relay health is checked at MCP runtime layer, not duplicated here.
+  // Guardian gates: slippage, volume, gas, cooldown, prices (5 gates).
 
   return {
     can_proceed: refusals.length === 0, refusals,
@@ -1032,7 +1038,6 @@ async function checkGuardian(scout: ScoutResult): Promise<GuardianResult> {
     volume: { ok: volumeOk, usd: volumeUsd },
     gas: { ok: gasOk, estimated_stx: gasStx },
     cooldown: { ok: cooldownOk, remaining_hours: cooldownRemaining },
-    relay: { ok: relayOk, detail: relayDetail },
     prices: { ok: pricesOk, detail: pricesOk ? "all prices live" : "missing price data" },
   };
 }
@@ -1183,6 +1188,7 @@ function buildDeployInstructions(protocol: Protocol, amount: number, token: stri
             postConditions: [
               { type: "ft", principal: wallet, asset: USDH_TOKEN, assetName: "usdh-token", conditionCode: "lte", amount: hermeticaEstimate },
             ],
+            requires_substitution: true,
             _note: "SEQUENTIAL: execute after Step 1 confirms. Replace amount with actual swap output from tx receipt.",
           },
           description: `Step 2: Stake ~${hermeticaEstimate} USDh into Hermetica sUSDh (adjust amount from Step 1 output)`,
@@ -1242,6 +1248,7 @@ function buildDeployInstructions(protocol: Protocol, amount: number, token: stri
             postConditions: [
               { type: "ft", principal: wallet, asset: AEUSDC_TOKEN, assetName: "bridged-usdc", conditionCode: "lte", amount: graniteEstimate },
             ],
+            requires_substitution: true,
             _note: "SEQUENTIAL: execute after Step 1 confirms. Replace amount with actual swap output from tx receipt.",
           },
           description: `Step 2: Deposit ~${graniteEstimate} aeUSDC to Granite lending pool (adjust amount from Step 1 output)`,
