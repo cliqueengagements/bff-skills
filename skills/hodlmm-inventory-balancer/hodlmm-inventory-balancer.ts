@@ -695,7 +695,7 @@ function invokeMoveLiquidityRedeploy(poolId: string, stxAddress: string, passwor
   if (parsed.status !== "success") {
     throw new Error(`move-liquidity reported ${parsed.status}: ${parsed.error ?? JSON.stringify(parsed)}`);
   }
-  const tx = parsed?.data?.tx_id ?? parsed?.data?.txid;
+  const tx = parsed?.data?.tx_id ?? parsed?.data?.txid ?? parsed?.data?.transaction?.txid;
   if (!tx) throw new Error("move-liquidity succeeded but returned no tx_id");
   return String(tx);
 }
