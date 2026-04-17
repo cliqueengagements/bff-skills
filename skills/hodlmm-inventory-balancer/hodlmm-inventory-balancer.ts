@@ -295,6 +295,18 @@ async function fetchStxBalanceUstx(wallet: string): Promise<bigint> {
   return BigInt(data?.balance ?? "0");
 }
 
+async function fetchFtBalanceRaw(wallet: string, tokenContract: string, assetName: string): Promise<bigint> {
+  // STX wrapper is a passthrough — check native STX balance.
+  if (tokenContract === STX_WRAPPER_CONTRACT) return fetchStxBalanceUstx(wallet);
+  const data = await fetchJson<Record<string, unknown>>(
+    `${HIRO_API}/extended/v1/address/${wallet}/balances`
+  );
+  const fts = (data.fungible_tokens ?? {}) as Record<string, { balance?: string }>;
+  const key = `${tokenContract}::${assetName}`;
+  const entry = fts[key];
+  return BigInt(entry?.balance ?? "0");
+}
+
 async function fetchNonce(wallet: string): Promise<bigint> {
   const data = await fetchJson<Record<string, unknown>>(`${HIRO_API}/extended/v1/address/${wallet}/nonces`);
   const nextNonce = data.possible_next_nonce;
@@ -654,6 +666,8 @@ function invokeMoveLiquidityRedeploy(poolId: string, password: string | undefine
   if (!fs.existsSync(cli)) {
     throw new Error(`hodlmm-move-liquidity CLI not found at ${cli}. Install the skill or set HODLMM_MOVE_LIQUIDITY_CLI.`);
   }
+  // `hodlmm-move-liquidity`'s --confirm is a boolean flag (no value), unlike this
+  // skill's `--confirm=BALANCE`. Verified against aibtcdev/skills#317. Pass no value.
   const args = ["run", cli, "run", "--pool", poolId, "--confirm"];
   if (password) args.push("--password", password);
 
@@ -1043,6 +1057,28 @@ async function recommendOrRun(opts: Record<string, string | boolean | undefined>
       swap: plan,
       redeploy: skipRedeploy ? null : { skill: "hodlmm-move-liquidity", invocation: `run --pool ${poolId} --confirm` },
       note: "Dry-run. Pass --confirm=BALANCE to execute.",
+    });
+  }
+
+  // Pre-broadcast FT balance gate — per Arc's review on PR #494.
+  // The swap transfers `amount_in_raw` of token_in FROM the sender's wallet via
+  // the SIP-010 transfer call inside the router. If the wallet doesn't hold it
+  // (common when the over-weight side is fully locked in LP bins), the tx
+  // aborts on-chain AND the state marker would still be written — leaving the
+  // next run trying to redeploy against a swap that never settled.
+  const inAssetForBalance = tokenAssetName(plan.token_in);
+  const requiredIn = BigInt(plan.amount_in_raw);
+  const availableIn = inAssetForBalance === null
+    ? await fetchStxBalanceUstx(stxAddress)
+    : await fetchFtBalanceRaw(stxAddress, plan.token_in, inAssetForBalance);
+  if (availableIn < requiredIn) {
+    return out("blocked", action, {
+      reason: "insufficient_input_token_balance",
+      token_in: plan.token_in,
+      token_in_symbol: plan.token_in_symbol,
+      required_raw: requiredIn.toString(),
+      available_raw: availableIn.toString(),
+      hint: "The over-weight token likely sits inside LP bins. Withdraw a slice first or top up the wallet externally. v1 does not auto-withdraw.",
     });
   }
 
