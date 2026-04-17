@@ -295,16 +295,14 @@ async function fetchStxBalanceUstx(wallet: string): Promise<bigint> {
   return BigInt(data?.balance ?? "0");
 }
 
-async function fetchFtBalanceRaw(wallet: string, tokenContract: string, assetName: string): Promise<bigint> {
-  // STX wrapper is a passthrough — check native STX balance.
-  if (tokenContract === STX_WRAPPER_CONTRACT) return fetchStxBalanceUstx(wallet);
+async function fetchTokenBalanceRaw(wallet: string, asset: TokenAsset): Promise<bigint> {
+  if (asset.kind === "stx") return fetchStxBalanceUstx(wallet);
   const data = await fetchJson<Record<string, unknown>>(
     `${HIRO_API}/extended/v1/address/${wallet}/balances`
   );
   const fts = (data.fungible_tokens ?? {}) as Record<string, { balance?: string }>;
-  const key = `${tokenContract}::${assetName}`;
-  const entry = fts[key];
-  return BigInt(entry?.balance ?? "0");
+  const key = `${asset.contract}::${asset.assetName}`;
+  return BigInt(fts[key]?.balance ?? "0");
 }
 
 async function fetchNonce(wallet: string): Promise<bigint> {
@@ -552,23 +550,33 @@ function planCorrectiveSwap(inputs: PlannerInputs): SwapPlan | null {
 // hop through the same pool we're balancing. Post-conditions: Deny with an FT
 // receive condition on `minimum_amount_out_raw`.
 
-function tokenAssetName(contract: string): string | null {
-  // Returns null for STX-passthrough wrapper; that signals STX-post-condition path.
-  if (contract === STX_WRAPPER_CONTRACT) return null;
+// Unified token-kind resolver — single source of truth for "is this native STX
+// (via the wrapper passthrough) or a real SIP-010?" Post-conditions, balance
+// gates, and any future token-handling branch should go through this helper so
+// the two codepaths cannot drift out of sync (per @arc0btc's observation on
+// bff-skills #494).
+type TokenAsset =
+  | { kind: "stx" }
+  | { kind: "ft"; contract: `${string}.${string}`; assetName: string };
+
+function resolveTokenAsset(contract: string): TokenAsset {
+  if (contract === STX_WRAPPER_CONTRACT) return { kind: "stx" };
   const override = process.env.TOKEN_ASSETS_OVERRIDE;
+  let assetName: string | undefined;
   if (override) {
     try {
       const map = JSON.parse(override) as Record<string, string>;
-      if (map[contract]) return map[contract];
+      if (map[contract]) assetName = map[contract];
     } catch { /* ignore */ }
   }
-  const known = TOKEN_ASSET_NAMES[contract];
-  if (known) return known;
-  // Fall back to the contract name — safe for contracts that use
-  // `(define-fungible-token <contract-name>)`, unsafe otherwise. Flagged loudly.
-  const name = contract.split(".")[1] ?? contract;
-  log(`WARN: no verified asset-name for ${contract}, falling back to contract-name '${name}'`);
-  return name;
+  if (!assetName) assetName = TOKEN_ASSET_NAMES[contract];
+  if (!assetName) {
+    // Fall back to the contract name — safe for contracts that use
+    // `(define-fungible-token <contract-name>)`, unsafe otherwise. Flagged loudly.
+    assetName = contract.split(".")[1] ?? contract;
+    log(`WARN: no verified asset-name for ${contract}, falling back to contract-name '${assetName}'`);
+  }
+  return { kind: "ft", contract: contract as `${string}.${string}`, assetName };
 }
 
 async function executeCorrectiveSwap(
@@ -599,28 +607,18 @@ async function executeCorrectiveSwap(
   const amountIn = BigInt(plan.amount_in_raw);
   const minOut = BigInt(plan.minimum_amount_out_raw);
 
-  const inAsset = tokenAssetName(plan.token_in);
+  const inAsset = resolveTokenAsset(plan.token_in);
 
-  // Minimum-output is enforced by the swap router's `min-out` argument
-  // (ERR_MINIMUM_RECEIVED asserts internally). Post-conditions pin the
-  // INPUT side: sender sends exactly `amount_in` of `token_in`. Mode = Allow
-  // because the swap emits fee transfers between pool, protocol collector,
-  // and receiver; Deny would require explicit allowances for each fee flow,
-  // which vary with pool config. Contract-level slippage + send-side pin is
-  // the same safety contract our hodlmm-move-liquidity skill uses.
-  // willSendLte (not Eq) on the sender: bounded upper limit. The swap-router's
-  // min-dx/min-dy arg enforces minimum OUTPUT inside the contract. Allow mode
-  // permits any internal transfers (fee flows, intra-pool accounting).
-  const pcs: unknown[] = [];
-  if (inAsset === null) {
-    pcs.push(Pc.principal(senderAddress).willSendLte(amountIn).ustx());
-  } else {
-    pcs.push(
-      Pc.principal(senderAddress)
-        .willSendLte(amountIn)
-        .ft(plan.token_in as `${string}.${string}`, inAsset)
-    );
-  }
+  // Post-condition: bounded upper send on the INPUT side. Allow mode because
+  // the router emits pool/protocol fee transfers that vary with pool config;
+  // Deny would require an explicit allowance for each fee flow. Minimum-output
+  // slippage is enforced by the router's own `min-received` argument
+  // (ERR_MINIMUM_RECEIVED internally). Same safety contract `hodlmm-move-liquidity`
+  // uses for its DLP mint/burn flow.
+  const senderPin = Pc.principal(senderAddress).willSendLte(amountIn);
+  const pcs: unknown[] = [
+    inAsset.kind === "stx" ? senderPin.ustx() : senderPin.ft(inAsset.contract, inAsset.assetName),
+  ];
 
   // Canonical entrypoint: swap-simple-multi takes a list of swap tuples.
   // Single-hop in our case → list of 1. max-steps=319 (contract MAX_STEPS).
@@ -1060,17 +1058,17 @@ async function recommendOrRun(opts: Record<string, string | boolean | undefined>
     });
   }
 
-  // Pre-broadcast FT balance gate — per Arc's review on PR #494.
-  // The swap transfers `amount_in_raw` of token_in FROM the sender's wallet via
-  // the SIP-010 transfer call inside the router. If the wallet doesn't hold it
-  // (common when the over-weight side is fully locked in LP bins), the tx
-  // aborts on-chain AND the state marker would still be written — leaving the
-  // next run trying to redeploy against a swap that never settled.
-  const inAssetForBalance = tokenAssetName(plan.token_in);
+  // Pre-broadcast input-token balance gate — per @arc0btc's review on PR #494.
+  // The swap transfers `amount_in_raw` of token_in FROM the sender's wallet
+  // via the SIP-010 transfer call inside the router. If the wallet doesn't
+  // hold it (common when the over-weight side is fully locked in LP bins),
+  // the tx would abort on-chain AND the state marker would still be written,
+  // leaving the next run trying to redeploy against a swap that never settled.
+  // Routes through `resolveTokenAsset` so STX vs FT detection stays in sync
+  // with the post-condition path.
+  const inAssetResolved = resolveTokenAsset(plan.token_in);
   const requiredIn = BigInt(plan.amount_in_raw);
-  const availableIn = inAssetForBalance === null
-    ? await fetchStxBalanceUstx(stxAddress)
-    : await fetchFtBalanceRaw(stxAddress, plan.token_in, inAssetForBalance);
+  const availableIn = await fetchTokenBalanceRaw(stxAddress, inAssetResolved);
   if (availableIn < requiredIn) {
     return out("blocked", action, {
       reason: "insufficient_input_token_balance",
