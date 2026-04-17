@@ -670,16 +670,17 @@ async function executeCorrectiveSwap(
 
 // ─── Redeploy via hodlmm-move-liquidity CLI ───────────────────────────────────
 
-function invokeMoveLiquidityRedeploy(poolId: string, password: string | undefined): string {
+function invokeMoveLiquidityRedeploy(poolId: string, stxAddress: string, password: string | undefined): string {
   const cli =
     process.env.HODLMM_MOVE_LIQUIDITY_CLI ??
     path.resolve(__dirname, "..", "hodlmm-move-liquidity", "hodlmm-move-liquidity.ts");
   if (!fs.existsSync(cli)) {
     throw new Error(`hodlmm-move-liquidity CLI not found at ${cli}. Install the skill or set HODLMM_MOVE_LIQUIDITY_CLI.`);
   }
-  // `hodlmm-move-liquidity`'s --confirm is a boolean flag (no value), unlike this
-  // skill's `--confirm=BALANCE`. Verified against aibtcdev/skills#317. Pass no value.
-  const args = ["run", cli, "run", "--pool", poolId, "--confirm"];
+  // `hodlmm-move-liquidity`'s `run` requires `--wallet <address>` + `--pool` + boolean `--confirm`
+  // (no value). `--force` overrides the IN_RANGE no-op gate — required here because the
+  // inventory balancer corrects exposure ratio regardless of price-drift status.
+  const args = ["run", cli, "run", "--wallet", stxAddress, "--pool", poolId, "--confirm", "--force"];
   if (password) args.push("--password", password);
 
   const result = spawnSync("bun", args, { encoding: "utf-8", timeout: 120_000 });
@@ -943,7 +944,8 @@ async function recommendOrRun(opts: Record<string, string | boolean | undefined>
     if (!execute) {
       return out("success", action, { resume: "redeploy-only", pending });
     }
-    const redeployTx = invokeMoveLiquidityRedeploy(poolId, password || undefined);
+    const { stxAddress: resumeStx } = await getWalletKeys(password);
+    const redeployTx = invokeMoveLiquidityRedeploy(poolId, resumeStx, password || undefined);
     state[poolId] = {
       ...poolState,
       last_cycle_at: new Date().toISOString(),
@@ -1151,7 +1153,7 @@ async function recommendOrRun(opts: Record<string, string | boolean | undefined>
 
   let redeployTx: string;
   try {
-    redeployTx = invokeMoveLiquidityRedeploy(poolId, password || undefined);
+    redeployTx = invokeMoveLiquidityRedeploy(poolId, stxAddress, password || undefined);
   } catch (e) {
     return out("error", action, {
       pool_id: poolId,
