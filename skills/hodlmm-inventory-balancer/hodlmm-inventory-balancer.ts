@@ -68,6 +68,19 @@ const DEFAULT_SLIPPAGE_BPS = 50; // 0.5%
 const STX_GAS_FLOOR_USTX = 500_000n; // 0.5 STX reserved for gas
 const MIN_SWAP_SATS = 1000n; // refuse tiny swaps
 
+// Pool volume floor — refuse corrective swaps on pools whose bin-level reserves
+// (across bins we'd touch) are too thin to absorb the swap without moving the
+// price by more than the slippage budget. #493 safety contract: "Pool volume
+// too thin to support corrective swap without moving the pool price."
+// Conservative: require the active bin's reserve of the OUTPUT token to be at
+// least THIN_POOL_MIN_RATIO × the expected output.
+const THIN_POOL_MIN_RATIO = 3n; // active-bin reserve must be ≥ 3× expected output
+
+// Post-broadcast verification sleep — lets the first Nakamoto block settle so
+// ratio_after reflects the post-swap state. #493 step 6 requires re-reading
+// and emitting before/after ratios.
+const VERIFY_SLEEP_MS = 10_000;
+
 // v1 scope: only Bitflow-tradeable HODLMM pools. JingSwap excluded.
 const V1_ELIGIBLE_POOLS = new Set<string>([
   "dlmm_1", "dlmm_2", "dlmm_3", "dlmm_4", "dlmm_5", "dlmm_6", "dlmm_7", "dlmm_8",
@@ -1058,6 +1071,30 @@ async function recommendOrRun(opts: Record<string, string | boolean | undefined>
     });
   }
 
+  // Pre-broadcast thin-pool guard — #493 safety contract.
+  // If the active bin's reserve of the OUTPUT token is less than
+  // THIN_POOL_MIN_RATIO × the expected output, a single-hop swap would
+  // need to walk many bins and risk moving the pool price by more than the
+  // slippage budget. Refuse rather than broadcast.
+  const outputActiveReserveRaw = plan.direction === "X->Y"
+    ? BigInt(
+      poolBins.bins.find((b) => b.bin_id === poolBins.active_bin_id)?.reserve_y ?? "0"
+    )
+    : BigInt(
+      poolBins.bins.find((b) => b.bin_id === poolBins.active_bin_id)?.reserve_x ?? "0"
+    );
+  const expectedOutForThreshold = BigInt(plan.expected_amount_out_raw);
+  if (outputActiveReserveRaw < expectedOutForThreshold * THIN_POOL_MIN_RATIO) {
+    return out("blocked", action, {
+      reason: "pool_volume_too_thin",
+      direction: plan.direction,
+      active_bin_output_reserve_raw: outputActiveReserveRaw.toString(),
+      expected_output_raw: expectedOutForThreshold.toString(),
+      min_ratio: THIN_POOL_MIN_RATIO.toString(),
+      hint: "Active bin's output-token reserve is less than the conservative headroom (3× expected). Thin pools can move price beyond the slippage budget. Shrink --max-correction-sats or try a different pool.",
+    });
+  }
+
   // Pre-broadcast input-token balance gate — per @arc0btc's review on PR #494.
   // The swap transfers `amount_in_raw` of token_in FROM the sender's wallet
   // via the SIP-010 transfer call inside the router. If the wallet doesn't
@@ -1101,9 +1138,11 @@ async function recommendOrRun(opts: Record<string, string | boolean | undefined>
   saveInventoryState(state);
 
   if (skipRedeploy) {
+    const ratioAfter = await readRatioAfterDelay(poolId, stxAddress, targetXRatio);
     return out("success", action, {
       pool_id: poolId,
       ratio_before: ratio,
+      ratio_after: ratioAfter,
       swap: { ...plan, tx_id: swapTx, explorer: `${EXPLORER}/0x${swapTx}?chain=mainnet` },
       redeploy: null,
       state_marker: { path: INVENTORY_STATE_FILE, status: "swap_done_redeploy_pending" },
@@ -1131,14 +1170,35 @@ async function recommendOrRun(opts: Record<string, string | boolean | undefined>
   };
   saveInventoryState(state);
 
+  // #493 step 6 "Verify": re-read position post-broadcast and emit ratio_after.
+  const ratioAfter = await readRatioAfterDelay(poolId, stxAddress, targetXRatio);
+
   return out("success", action, {
     pool_id: poolId,
     pair: ratio.pair,
     ratio_before: ratio,
+    ratio_after: ratioAfter,
     swap: { ...plan, tx_id: swapTx, explorer: `${EXPLORER}/0x${swapTx}?chain=mainnet` },
     redeploy: { tx_id: redeployTx, explorer: `${EXPLORER}/0x${redeployTx}?chain=mainnet` },
     state_marker: { path: INVENTORY_STATE_FILE, status: "success" },
   });
+}
+
+/**
+ * Re-read the position ratio after a short delay so the first Nakamoto block
+ * has a chance to include our tx. If the tx hasn't confirmed yet, the returned
+ * ratio may still reflect pre-swap state — the `quote_fetched_at` field on the
+ * returned RatioSummary lets the caller reason about freshness.
+ */
+async function readRatioAfterDelay(poolId: string, wallet: string, targetXRatio: number): Promise<RatioSummary | { note: string }> {
+  try {
+    await new Promise((r) => setTimeout(r, VERIFY_SLEEP_MS));
+    const { pool, poolBins, userBins } = await gatherPool(poolId, wallet);
+    if (userBins.length === 0) return { note: "no_user_position_after" };
+    return computeRatio(pool, userBins, poolBins.bins, poolBins.active_bin_id, targetXRatio, poolBins.fetched_at);
+  } catch (e) {
+    return { note: `ratio_after_read_failed: ${(e as Error).message}` };
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
