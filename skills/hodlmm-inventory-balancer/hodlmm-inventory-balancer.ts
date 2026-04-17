@@ -1163,6 +1163,8 @@ function slippageDefault(): number {
 
 // ─── Go ───────────────────────────────────────────────────────────────────────
 
-program.parseAsync(process.argv).catch((e) => {
-  err("main", (e as Error).message);
-});
+if (import.meta.main) {
+  program.parseAsync(process.argv).catch((e) => {
+    err("main", (e as Error).message);
+  });
+}
