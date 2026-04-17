@@ -94,6 +94,41 @@ Daily winners are announced on [@Bitflow](https://twitter.com/Bitflow) and liste
 
 ---
 
+## Registry Compatibility
+
+This staging repo feeds into the official [AIBTC skills registry](https://github.com/aibtcdev/skills). All approved skills are promoted there. To avoid conversion friction during promotion:
+
+### Frontmatter format
+
+Your `SKILL.md` **must** use the `metadata:` nested format — not flat keys. See `SKILL_TEMPLATE.md` for the exact schema. The most common CI failures:
+
+- `tags` and `requires` must be **comma-separated quoted strings**, not YAML arrays
+- `user-invocable` must be the **string** `"false"`, not a boolean
+- `entry` must be **repo-root-relative** (e.g. `your-skill-name/your-skill-name.ts`, not `skills/your-skill-name/...`)
+- `AGENT.md` must start with YAML frontmatter containing `name`, `skill`, and `description`
+
+### CLI pattern
+
+Use [Commander.js](https://github.com/tj/commander.js) for argument parsing. See `SKILL_TEMPLATE.md` §3 for the pattern.
+
+### Error output
+
+Registry minimum: `{ "error": "descriptive message" }` for errors. See `SKILL_TEMPLATE.md` output contract section.
+
+### Post-approval promotion
+
+After a skill wins and is pushed to aibtcdev/skills:
+
+1. Skill directory moves to repo root (no `skills/` prefix)
+2. A row is added to the aibtcdev/skills README.md skills table
+3. `bun run manifest` regenerates `skills.json`
+4. `bun run typecheck` must pass
+5. Commit format: `feat(skill-name): add skill-name skill`
+
+For the full target conventions, see [aibtcdev/skills CONTRIBUTING.md](https://github.com/aibtcdev/skills/blob/main/CONTRIBUTING.md).
+
+---
+
 ## Questions
 
 Open an issue or find us in the [Bitflow Discord](https://discord.gg/bitflow).
