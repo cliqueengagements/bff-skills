@@ -1119,19 +1119,27 @@ async function executeAddLiquidityRedeposit(
   return result.txid as string;
 }
 
-async function waitForTxConfirmation(txId: string, timeoutMs = 120_000): Promise<void> {
+// 600s default timeout. Mainnet propagation + indexing on Hiro can easily run
+// past the naïve 2× block-time estimate (Nakamoto is ~5s but microblock/epoch
+// boundaries and mempool congestion routinely push tx visibility to 60–180s).
+// The 3-leg flow broadcasts 3 sequential txs, each waiting on this helper;
+// being generous here trades wall-clock for a lower false-failure rate when the
+// state marker is between legs. Prefix `0x` on Hiro tx lookups — some codepaths
+// return the tx without, some require it, and querying with the prefix works
+// consistently.
+async function waitForTxConfirmation(txId: string, timeoutMs = 600_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  const poll = 4_000;
+  const poll = 6_000;
+  const url = `${HIRO_API}/extended/v1/tx/0x${txId}`;
   while (Date.now() < deadline) {
     try {
-      const res = await fetchJson<Record<string, unknown>>(`${HIRO_API}/extended/v1/tx/${txId}`);
+      const res = await fetchJson<Record<string, unknown>>(url);
       const status = res.tx_status as string | undefined;
       if (status === "success") return;
       if (status && status !== "pending") {
-        throw new Error(`Tx ${txId} landed with status ${status}: ${JSON.stringify(res)}`);
+        throw new Error(`Tx ${txId} landed with status ${status}: ${JSON.stringify((res as Record<string, unknown>).tx_result ?? {})}`);
       }
     } catch (e) {
-      // Pending or not found yet — keep polling
       if ((e as Error).message.startsWith("Tx ")) throw e;
     }
     await new Promise((r) => setTimeout(r, poll));
@@ -1286,11 +1294,17 @@ program
         detail: JSON.stringify(cooldowns),
       });
 
-      // Surface unresolved state markers
+      // Surface unresolved state markers — flag both the v1 pending state and
+      // the two intermediate states introduced by the 3-leg rebalance-withdraw path.
       const state = loadInventoryState();
+      const unresolvedStatuses = new Set([
+        "swap_done_redeploy_pending",
+        "withdraw_done_swap_pending",
+        "withdraw_done_swap_done_redeposit_pending",
+      ]);
       const unresolved = Object.entries(state)
-        .filter(([, v]) => v.last_cycle_status === "swap_done_redeploy_pending")
-        .map(([k]) => k);
+        .filter(([, v]) => v.last_cycle_status && unresolvedStatuses.has(v.last_cycle_status))
+        .map(([k, v]) => `${k}:${v.last_cycle_status}`);
       checks.push({
         name: "state_marker",
         ok: unresolved.length === 0,
@@ -1421,6 +1435,38 @@ async function recommendOrRun(opts: Record<string, string | boolean | undefined>
   // Check state marker: resume-from-redeploy path
   const state = loadInventoryState();
   const poolState = state[poolId];
+
+  // Rebalance-withdraw intermediate states: surface as blocked with explicit
+  // remediation hints. Re-planning mid-cycle from a partial state is fragile
+  // (position shifted, wallet has partial proceeds, direction could be inferred
+  // wrong). Operator flow: wait for the last known tx to confirm via explorer,
+  // then re-run `run --allow-rebalance-withdraw` — the planner will see the
+  // current (partially-corrected) ratio and plan a fresh 3-leg cycle sized to
+  // close the remaining gap. Clear the stale marker with `status` after the
+  // prior txs have all landed.
+  if (poolState?.last_cycle_status === "withdraw_done_swap_pending") {
+    return out("blocked", action, {
+      pool_id: poolId,
+      reason: "withdraw_done_swap_pending",
+      last_withdraw_tx: poolState.last_withdraw_tx,
+      explorer: poolState.last_withdraw_tx ? `${EXPLORER}/0x${poolState.last_withdraw_tx}?chain=mainnet` : null,
+      hint: "Withdraw broadcast but the run didn't land the follow-on swap. Wait for the withdraw tx to confirm on the explorer, then re-run `run --pool <id> --allow-rebalance-withdraw --confirm BALANCE`. Fresh 3-leg cycle will re-plan from current state.",
+    });
+  }
+  if (poolState?.last_cycle_status === "withdraw_done_swap_done_redeposit_pending") {
+    return out("blocked", action, {
+      pool_id: poolId,
+      reason: "withdraw_done_swap_done_redeposit_pending",
+      last_withdraw_tx: poolState.last_withdraw_tx,
+      last_swap_tx: poolState.last_swap_tx,
+      explorer: {
+        withdraw: poolState.last_withdraw_tx ? `${EXPLORER}/0x${poolState.last_withdraw_tx}?chain=mainnet` : null,
+        swap: poolState.last_swap_tx ? `${EXPLORER}/0x${poolState.last_swap_tx}?chain=mainnet` : null,
+      },
+      hint: "Withdraw + swap landed but the redeposit did not. Wait for both prior txs on the explorer, then re-run the skill — it will plan a redeposit-sized cycle from the current wallet + ratio.",
+    });
+  }
+
   const pending = poolState?.last_cycle_status === "swap_done_redeploy_pending" ? poolState.swap_pending_details : undefined;
   if (pending && skipRedeploy) {
     return out("blocked", action, {
