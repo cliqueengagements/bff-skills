@@ -34,6 +34,13 @@ const EXPLORER = "https://explorer.hiro.so/txid";
 const DLMM_SWAP_ROUTER_ADDR = "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD";
 const DLMM_SWAP_ROUTER_NAME = "dlmm-swap-router-v-1-1";
 
+// DLMM liquidity router — used by the opt-in `--allow-rebalance-withdraw` mode to
+// withdraw a slice of the overweight bin and redeposit swapped proceeds on the
+// underweight side. Same mainnet deployer as the swap router; contract functions
+// used: `withdraw-relative-liquidity-same-multi`, `add-relative-liquidity-same-multi`.
+const DLMM_LIQUIDITY_ROUTER_ADDR = "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD";
+const DLMM_LIQUIDITY_ROUTER_NAME = "dlmm-liquidity-router-v-1-1";
+
 // Contract principals for tokens we support. STX wrapper implements SIP-010 but
 // transfers move native STX under the hood → STX post-conditions, not FT.
 const STX_WRAPPER_CONTRACT = "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.token-stx-v-1-2";
@@ -71,6 +78,17 @@ const DEFAULT_MAX_QUOTE_STALENESS_SECONDS = 45;
 const DEFAULT_SLIPPAGE_BPS = 50; // 0.5%
 const STX_GAS_FLOOR_USTX = 500_000n; // 0.5 STX reserved for gas
 const MIN_SWAP_SATS = 1000n; // refuse tiny swaps
+
+// --allow-rebalance-withdraw: opt-in 3-leg mode (withdraw-slice → swap → redeposit)
+// that lets the skill hit target ± --min-drift-pct on positions v1's swap+recenter
+// path alone cannot balance. Guardrails: REBALANCE_MAX_SLICE_BPS caps how much of
+// the overweight bin's shares a single cycle may withdraw (deterministic upper
+// bound on capital motion). REBALANCE_ADD_OFFSET_BINS is the number of bins on
+// either side of active the redeposit walks (narrow by default — tight bin cluster
+// around active = swap proceeds land as concentrated liquidity close to mid-price).
+const REBALANCE_MAX_SLICE_BPS = 8000;       // at most 80% of a single bin's shares
+const REBALANCE_ADD_OFFSET_BINS = 1;        // deposit at active ±1 (3 bins total)
+const REBALANCE_ADD_TOLERANCE_BINS = 2;     // active-bin drift tolerance on deposit
 
 // Pool volume floor — refuse corrective swaps on pools whose bin-level reserves
 // (across bins we'd touch) are too thin to absorb the swap without moving the
@@ -167,9 +185,17 @@ interface InventoryState {
   // Per-pool state
   [poolId: string]: {
     last_cycle_at?: string;
-    last_cycle_status?: "success" | "swap_done_redeploy_pending" | "aborted";
+    last_cycle_status?:
+      | "success"
+      | "swap_done_redeploy_pending"
+      | "withdraw_done_swap_pending"
+      | "withdraw_done_swap_done_redeposit_pending"
+      | "aborted";
     last_swap_tx?: string;
     last_redeploy_tx?: string;
+    last_withdraw_tx?: string;
+    last_redeposit_tx?: string;
+    last_cycle_mode?: "default" | "rebalance_withdraw";
     swap_pending_details?: {
       swap_tx: string;
       swap_direction: "X->Y" | "Y->X";
@@ -709,6 +735,410 @@ async function executeCorrectiveSwap(
   return result.txid as string;
 }
 
+// ─── 3-leg rebalance: withdraw-slice → swap → redeposit ──────────────────────
+//
+// Opt-in via `--allow-rebalance-withdraw`. Completes the skill's "balancer"
+// claim on positions where v1's swap + bin-to-bin redeploy cannot close the
+// gap (e.g. sprawled all-Y bins below active). Emitted instead of the default
+// swap+redeploy when the flag is set and the position has meaningful deviation.
+//
+// Plan shape:
+//   1. withdraw-slice: pick the largest overweight bin, compute share fraction
+//      that frees ΔV worth of overweight token (ΔV = |current - target| × total_value)
+//   2. swap: route 100% of that freed balance through the existing corrective
+//      swap path (wallet-side, same post-condition pattern)
+//   3. redeposit: add-relative-liquidity-same-multi at active ± REBALANCE_ADD_OFFSET_BINS,
+//      depositing the swap output on the underweight side. The add-liquidity is
+//      the redeploy — the move-liquidity CLI is NOT invoked in this path.
+
+interface WithdrawSliceEntry {
+  bin_id: number;
+  active_bin_id_offset: number;
+  shares_to_withdraw_raw: string;
+  share_fraction_bps: number;
+  expected_x_raw: string;
+  expected_y_raw: string;
+  min_x_raw: string;
+  min_y_raw: string;
+}
+
+interface WithdrawSlicePlan {
+  entries: WithdrawSliceEntry[];          // may span multiple bins (list cap 300)
+  total_expected_x_raw: string;
+  total_expected_y_raw: string;
+  total_min_x_raw: string;
+  total_min_y_raw: string;
+}
+
+interface RedepositPlan {
+  bins: Array<{ active_bin_id_offset: number; x_amount_raw: string; y_amount_raw: string }>;
+  total_x_raw: string;
+  total_y_raw: string;
+  active_bin_expected: number;
+  active_bin_tolerance: number;
+}
+
+interface RebalanceWithdrawPlan {
+  withdraw: WithdrawSlicePlan;
+  swap: SwapPlan;
+  redeposit: RedepositPlan;
+  target_x_ratio: number;
+  current_x_ratio: number;
+  projected_x_ratio_after: number;
+}
+
+function planRebalanceWithdraw(
+  ratio: RatioSummary,
+  userBins: UserBin[],
+  pool: PoolMeta,
+  poolBins: BinData[],
+  activeBin: number,
+  activePriceScaled: bigint,
+  slippageBps: number,
+  maxSliceBps: number
+): { status: "ok"; plan: RebalanceWithdrawPlan } | { status: "refused"; reason: string; detail?: Record<string, unknown> } {
+  const totalValueY = BigInt(ratio.total_value_in_y);
+  if (totalValueY === 0n || activePriceScaled === 0n) {
+    return { status: "refused", reason: "insufficient_position_value" };
+  }
+
+  // Shift in Y-value to reach target_x_ratio. Overweight side donates; underweight receives.
+  const currentXY = BigInt(ratio.total_x_in_y);                    // X value in Y units
+  const targetXY = (totalValueY * BigInt(Math.floor(ratio.target_x_ratio * 1_000_000))) / 1_000_000n;
+  const overWeightX = currentXY > targetXY;
+  const shiftValueY = overWeightX ? currentXY - targetXY : targetXY - currentXY;
+  if (shiftValueY <= 0n) {
+    return { status: "refused", reason: "already_within_target" };
+  }
+
+  // Pick the bin holding the most overweight token (by raw amount of that side).
+  // Per-user-bin reserves may be reported as 0 by the App API — in that case derive
+  // effective reserves from user shares × pool_bin_reserves / pool_bin_liquidity
+  // (same derivation computeRatio uses). Without this, a sprawled position that only
+  // reports aggregate reserves would falsely refuse with "no_overweight_bin_found".
+  const poolBinMap = new Map(poolBins.map((b) => [b.bin_id, b]));
+  const candidates = userBins
+    .map((b) => {
+      let rx = BigInt(b.reserve_x || "0");
+      let ry = BigInt(b.reserve_y || "0");
+      if (rx === 0n && ry === 0n) {
+        const pb = poolBinMap.get(b.bin_id);
+        const userDlp = BigInt(b.liquidity || "0");
+        const poolDlp = pb ? BigInt(pb.liquidity || "0") : 0n;
+        if (pb && userDlp > 0n && poolDlp > 0n) {
+          rx = (userDlp * BigInt(pb.reserve_x)) / poolDlp;
+          ry = (userDlp * BigInt(pb.reserve_y)) / poolDlp;
+        }
+      }
+      return { bin: b, rx, ry, amt: overWeightX ? rx : ry };
+    })
+    .filter((c) => c.amt > 0n)
+    .sort((a, b) => (b.amt > a.amt ? 1 : b.amt < a.amt ? -1 : 0));
+
+  if (candidates.length === 0) {
+    return { status: "refused", reason: "no_overweight_bin_found", detail: { overweight_side: overWeightX ? "X" : "Y" } };
+  }
+
+  // Target withdraw amount in Y-value terms. Convert to raw overweight token.
+  const activePrice = activePriceScaled; // raw_y per raw_x, scaled
+  const withdrawAmtRaw = overWeightX
+    ? (shiftValueY * BigInt(PRICE_SCALE)) / activePrice  // raw X needed
+    : shiftValueY;                                         // raw Y (Y value == Y amount)
+
+  // Greedy fill across bins (largest-first) to accumulate the needed withdraw
+  // amount while respecting the per-bin slice cap. Each bin contributes at most
+  // `maxSliceBps` of its user shares; we walk down the sorted list until
+  // `accumulated >= withdrawAmtRaw` or we run out of bins.
+  // Router list cap is 300 per `withdraw-relative-liquidity-same-multi`.
+  const WITHDRAW_LIST_CAP = 300;
+  const entries: WithdrawSliceEntry[] = [];
+  let accumulated = 0n;
+  let totalExpectedX = 0n;
+  let totalExpectedY = 0n;
+
+  for (const c of candidates) {
+    if (accumulated >= withdrawAmtRaw || entries.length >= WITHDRAW_LIST_CAP) break;
+    const binReserveRaw = c.amt;
+    if (binReserveRaw === 0n) continue;
+    const needed = withdrawAmtRaw - accumulated;
+    const rawBinBps = Number((needed * 10_000n) / binReserveRaw);
+    const binSliceBps = Math.min(maxSliceBps, Math.max(1, rawBinBps));
+    const userShares = BigInt(c.bin.liquidity || "0");
+    if (userShares === 0n) continue;
+    const sharesRaw = (userShares * BigInt(binSliceBps)) / 10_000n;
+    if (sharesRaw === 0n) continue;
+    const eX = (c.rx * BigInt(binSliceBps)) / 10_000n;
+    const eY = (c.ry * BigInt(binSliceBps)) / 10_000n;
+    const mX = (eX * BigInt(10_000 - slippageBps)) / 10_000n;
+    const mY = (eY * BigInt(10_000 - slippageBps)) / 10_000n;
+    entries.push({
+      bin_id: c.bin.bin_id,
+      active_bin_id_offset: c.bin.bin_id - activeBin,
+      shares_to_withdraw_raw: sharesRaw.toString(),
+      share_fraction_bps: binSliceBps,
+      expected_x_raw: eX.toString(),
+      expected_y_raw: eY.toString(),
+      min_x_raw: mX.toString(),
+      min_y_raw: mY.toString(),
+    });
+    accumulated += overWeightX ? eX : eY;
+    totalExpectedX += eX;
+    totalExpectedY += eY;
+  }
+
+  if (entries.length === 0) {
+    return { status: "refused", reason: "no_viable_slice_entries" };
+  }
+
+  const totalMinX = (totalExpectedX * BigInt(10_000 - slippageBps)) / 10_000n;
+  const totalMinY = (totalExpectedY * BigInt(10_000 - slippageBps)) / 10_000n;
+  const withdraw: WithdrawSlicePlan = {
+    entries,
+    total_expected_x_raw: totalExpectedX.toString(),
+    total_expected_y_raw: totalExpectedY.toString(),
+    total_min_x_raw: totalMinX.toString(),
+    total_min_y_raw: totalMinY.toString(),
+  };
+  const expectedXRaw = totalExpectedX;
+  const expectedYRaw = totalExpectedY;
+
+  // Swap plan — input is 100% of the overweight proceeds from the withdraw.
+  const swapInRaw = overWeightX ? expectedXRaw : expectedYRaw;
+  if (swapInRaw < MIN_SWAP_SATS) {
+    return { status: "refused", reason: "planned_swap_below_minimum", detail: { planned_raw: swapInRaw.toString() } };
+  }
+  const expectedSwapOutRaw = overWeightX
+    ? (swapInRaw * activePrice) / BigInt(PRICE_SCALE)   // X→Y
+    : (swapInRaw * BigInt(PRICE_SCALE)) / activePrice;  // Y→X
+  const minSwapOutRaw = (expectedSwapOutRaw * BigInt(10_000 - slippageBps)) / 10_000n;
+
+  const swap: SwapPlan = {
+    direction: overWeightX ? "X->Y" : "Y->X",
+    token_in: overWeightX ? pool.token_x : pool.token_y,
+    token_in_symbol: overWeightX ? pool.token_x_symbol : pool.token_y_symbol,
+    token_in_decimals: overWeightX ? pool.token_x_decimals : pool.token_y_decimals,
+    token_out: overWeightX ? pool.token_y : pool.token_x,
+    token_out_symbol: overWeightX ? pool.token_y_symbol : pool.token_x_symbol,
+    token_out_decimals: overWeightX ? pool.token_y_decimals : pool.token_x_decimals,
+    amount_in_raw: swapInRaw.toString(),
+    expected_amount_out_raw: expectedSwapOutRaw.toString(),
+    minimum_amount_out_raw: minSwapOutRaw.toString(),
+    slippage_bps: slippageBps,
+    quote_source: `active_bin_price@bin=${activeBin} (rebalance-withdraw leg)`,
+    quote_fetched_at: ratio.quote_fetched_at,
+  };
+
+  // Redeposit — underweight token goes to the side of active that HODLMM assigns
+  // it (bins above active hold X only, bins below hold Y only; active itself is
+  // the mixed frontier). We deposit at active ± REBALANCE_ADD_OFFSET_BINS with
+  // the underweight amount split evenly across the appropriate side.
+  const underweightRaw = expectedSwapOutRaw; // raw tokens we'll have post-swap
+  const offsets: number[] = [];
+  if (overWeightX) {
+    // Underweight is Y — bins BELOW active (-1..-N)
+    for (let i = 1; i <= REBALANCE_ADD_OFFSET_BINS; i++) offsets.push(-i);
+  } else {
+    // Underweight is X — bins ABOVE active (+1..+N)
+    for (let i = 1; i <= REBALANCE_ADD_OFFSET_BINS; i++) offsets.push(i);
+  }
+  if (offsets.length === 0) {
+    return { status: "refused", reason: "no_redeposit_bins_available" };
+  }
+
+  const perBinRaw = underweightRaw / BigInt(offsets.length);
+  const remainder = underweightRaw - perBinRaw * BigInt(offsets.length);
+  const redepositBins = offsets.map((o, idx) => ({
+    active_bin_id_offset: o,
+    x_amount_raw: overWeightX ? "0" : (perBinRaw + (idx === 0 ? remainder : 0n)).toString(),
+    y_amount_raw: overWeightX ? (perBinRaw + (idx === 0 ? remainder : 0n)).toString() : "0",
+  }));
+
+  const redeposit: RedepositPlan = {
+    bins: redepositBins,
+    total_x_raw: overWeightX ? "0" : underweightRaw.toString(),
+    total_y_raw: overWeightX ? underweightRaw.toString() : "0",
+    active_bin_expected: activeBin,
+    active_bin_tolerance: REBALANCE_ADD_TOLERANCE_BINS,
+  };
+
+  // Projected post-state: LP loses the withdrawn slice on the overweight side
+  // and gains `underweightRaw` (valued via activePrice) on the underweight side.
+  const newXY = currentXY
+    - (overWeightX ? (expectedXRaw * activePrice) / BigInt(PRICE_SCALE) : 0n)
+    + (overWeightX ? 0n : (underweightRaw * activePrice) / BigInt(PRICE_SCALE));
+  const newValueY = totalValueY
+    - (overWeightX ? (expectedXRaw * activePrice) / BigInt(PRICE_SCALE) : expectedYRaw)
+    + (overWeightX ? expectedSwapOutRaw : (underweightRaw * activePrice) / BigInt(PRICE_SCALE));
+  const projectedX = newValueY === 0n ? 0 : Number((newXY * 1_000_000n) / newValueY) / 1_000_000;
+
+  return {
+    status: "ok",
+    plan: {
+      withdraw,
+      swap,
+      redeposit,
+      target_x_ratio: ratio.target_x_ratio,
+      current_x_ratio: ratio.current_x_ratio,
+      projected_x_ratio_after: Number(projectedX.toFixed(4)),
+    },
+  };
+}
+
+async function executeWithdrawSlice(
+  privateKey: string,
+  pool: PoolMeta,
+  slice: WithdrawSlicePlan,
+  nonce: bigint
+): Promise<string> {
+  const {
+    makeContractCall,
+    broadcastTransaction,
+    uintCV,
+    intCV,
+    listCV,
+    tupleCV,
+    contractPrincipalCV,
+    PostConditionMode,
+    AnchorMode,
+  } = await import("@stacks/transactions" as string);
+  const { STACKS_MAINNET } = await import("@stacks/network" as string);
+
+  const [poolAddr, poolName] = pool.pool_contract.split(".");
+  const [xAddr, xName] = pool.token_x.split(".");
+  const [yAddr, yName] = pool.token_y.split(".");
+
+  const positionTuples = slice.entries.map((e) => tupleCV({
+    "active-bin-id-offset": intCV(e.active_bin_id_offset),
+    amount: uintCV(BigInt(e.shares_to_withdraw_raw)),
+    "min-x-amount": uintCV(BigInt(e.min_x_raw)),
+    "min-y-amount": uintCV(BigInt(e.min_y_raw)),
+    "pool-trait": contractPrincipalCV(poolAddr, poolName),
+  }));
+
+  const fee = await estimateSwapFeeUstx();
+  const tx = await makeContractCall({
+    contractAddress: DLMM_LIQUIDITY_ROUTER_ADDR,
+    contractName: DLMM_LIQUIDITY_ROUTER_NAME,
+    functionName: "withdraw-relative-liquidity-same-multi",
+    functionArgs: [
+      listCV(positionTuples),
+      contractPrincipalCV(xAddr, xName),
+      contractPrincipalCV(yAddr, yName),
+      uintCV(BigInt(slice.total_min_x_raw)),
+      uintCV(BigInt(slice.total_min_y_raw)),
+    ],
+    senderKey: privateKey,
+    network: STACKS_MAINNET,
+    // DLP burn returns 2 FTs to sender — mirrors move-liquidity-multi's Allow
+    // rationale in hodlmm-move-liquidity. Aggregate min-x/y-amount-total above
+    // is the upper gate; per-bin min-x/y on the position tuple is the lower gate.
+    postConditionMode: PostConditionMode.Allow,
+    postConditions: [],
+    anchorMode: AnchorMode.Any,
+    nonce,
+    fee,
+  });
+
+  const result = await broadcastTransaction({ transaction: tx, network: STACKS_MAINNET });
+  if ("error" in result && result.error) {
+    throw new Error(`Withdraw-slice broadcast failed: ${result.error} — ${(result as Record<string, string>).reason ?? ""}`);
+  }
+  return result.txid as string;
+}
+
+async function executeAddLiquidityRedeposit(
+  privateKey: string,
+  pool: PoolMeta,
+  plan: RedepositPlan,
+  nonce: bigint
+): Promise<string> {
+  const {
+    makeContractCall,
+    broadcastTransaction,
+    uintCV,
+    intCV,
+    listCV,
+    tupleCV,
+    contractPrincipalCV,
+    someCV,
+    PostConditionMode,
+    AnchorMode,
+  } = await import("@stacks/transactions" as string);
+  const { STACKS_MAINNET } = await import("@stacks/network" as string);
+
+  const [poolAddr, poolName] = pool.pool_contract.split(".");
+  const [xAddr, xName] = pool.token_x.split(".");
+  const [yAddr, yName] = pool.token_y.split(".");
+
+  const positions = plan.bins.map((b) => tupleCV({
+    "active-bin-id-offset": intCV(b.active_bin_id_offset),
+    // 5% cap on per-side liquidity fees — same ceiling hodlmm-move-liquidity uses.
+    "max-x-liquidity-fee": uintCV((BigInt(b.x_amount_raw) * 5n) / 100n),
+    "max-y-liquidity-fee": uintCV((BigInt(b.y_amount_raw) * 5n) / 100n),
+    // min-dlp = 1 — redeposit mints fresh DLP shares at the current price; any
+    // positive share count indicates the deposit routed correctly. Cross-bin
+    // min-dlp semantics are the same ones upstream aibtcdev/skills#338 flagged.
+    "min-dlp": uintCV(1n),
+    "x-amount": uintCV(BigInt(b.x_amount_raw)),
+    "y-amount": uintCV(BigInt(b.y_amount_raw)),
+  }));
+
+  const toleranceTuple = tupleCV({
+    "expected-bin-id": intCV(plan.active_bin_expected),
+    "max-deviation": uintCV(BigInt(plan.active_bin_tolerance)),
+  });
+
+  const fee = await estimateSwapFeeUstx();
+  const tx = await makeContractCall({
+    contractAddress: DLMM_LIQUIDITY_ROUTER_ADDR,
+    contractName: DLMM_LIQUIDITY_ROUTER_NAME,
+    functionName: "add-relative-liquidity-same-multi",
+    functionArgs: [
+      listCV(positions),
+      contractPrincipalCV(poolAddr, poolName),
+      contractPrincipalCV(xAddr, xName),
+      contractPrincipalCV(yAddr, yName),
+      someCV(toleranceTuple),
+    ],
+    senderKey: privateKey,
+    network: STACKS_MAINNET,
+    // DLP mint from sender FT inputs — Allow for same reason as swap path:
+    // router routes X and Y deposits plus may emit per-bin fee transfers that
+    // vary with pool config (see PR #494 comment to @TheBigMacBTC).
+    postConditionMode: PostConditionMode.Allow,
+    postConditions: [],
+    anchorMode: AnchorMode.Any,
+    nonce,
+    fee,
+  });
+
+  const result = await broadcastTransaction({ transaction: tx, network: STACKS_MAINNET });
+  if ("error" in result && result.error) {
+    throw new Error(`Redeposit broadcast failed: ${result.error} — ${(result as Record<string, string>).reason ?? ""}`);
+  }
+  return result.txid as string;
+}
+
+async function waitForTxConfirmation(txId: string, timeoutMs = 120_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  const poll = 4_000;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetchJson<Record<string, unknown>>(`${HIRO_API}/extended/v1/tx/${txId}`);
+      const status = res.tx_status as string | undefined;
+      if (status === "success") return;
+      if (status && status !== "pending") {
+        throw new Error(`Tx ${txId} landed with status ${status}: ${JSON.stringify(res)}`);
+      }
+    } catch (e) {
+      // Pending or not found yet — keep polling
+      if ((e as Error).message.startsWith("Tx ")) throw e;
+    }
+    await new Promise((r) => setTimeout(r, poll));
+  }
+  throw new Error(`Tx ${txId} did not confirm within ${timeoutMs / 1000}s`);
+}
+
 // ─── Redeploy via hodlmm-move-liquidity CLI ───────────────────────────────────
 
 function invokeMoveLiquidityRedeploy(poolId: string, stxAddress: string, password: string | undefined): string {
@@ -788,10 +1218,9 @@ program
   .command("doctor")
   .description("Pre-flight checks")
   .option("--pool <id>", "Optional: narrow to a single pool")
-  .option("--password <pw>", "Wallet password (env: WALLET_PASSWORD)")
   .action(async (opts) => {
     try {
-      const password = opts.password ?? process.env.WALLET_PASSWORD ?? "";
+      const password = process.env.WALLET_PASSWORD ?? "";
       const checks: Array<{ name: string; ok: boolean; detail?: string }> = [];
       let wallet = "";
       try {
@@ -882,10 +1311,9 @@ program
   .option("--pool <id>", "Narrow to a single pool")
   .option("--target-ratio <r>", "X:Y percent (e.g. 50:50)", "50:50")
   .option("--min-drift-pct <n>", "Drift threshold (%)", String(DEFAULT_MIN_DRIFT_PCT))
-  .option("--password <pw>", "Wallet password (env: WALLET_PASSWORD)")
   .action(async (opts) => {
     try {
-      const password = opts.password ?? process.env.WALLET_PASSWORD ?? "";
+      const password = process.env.WALLET_PASSWORD ?? "";
       const { stxAddress } = await getWalletKeys(password);
       const targetXRatio = parseTargetRatio(opts.targetRatio);
       const minDriftPct = Number(opts.minDriftPct);
@@ -924,7 +1352,8 @@ program
   .option("--max-quote-staleness-seconds <n>", String(DEFAULT_MAX_QUOTE_STALENESS_SECONDS))
   .option("--slippage-bps <n>", String(slippageDefault()))
   .option("--skip-redeploy", "Plan swap only; do not include redeploy")
-  .option("--password <pw>", "Wallet password")
+  .option("--allow-rebalance-withdraw", "Plan the withdraw-slice → swap → redeposit 3-leg flow")
+  .option("--max-slice-bps <n>", `Cap on per-bin share slice (default ${REBALANCE_MAX_SLICE_BPS})`)
   .action(async (opts) => {
     try {
       await recommendOrRun(opts, false);
@@ -945,8 +1374,9 @@ program
   .option("--skip-redeploy", "Execute swap only; write swap_done_redeploy_pending marker")
   .option("--force-direction <dir>", "Override planner direction: X->Y or Y->X (operator escape hatch)")
   .option("--force-amount-in-raw <n>", "Override planner amount_in (raw sats)")
+  .option("--allow-rebalance-withdraw", "Opt-in: withdraw-slice → swap → redeposit mode for positions v1 swap+recenter cannot close. 3 sequential mainnet txs.")
+  .option("--max-slice-bps <n>", `Cap on per-bin share slice in rebalance-withdraw mode (default ${REBALANCE_MAX_SLICE_BPS})`)
   .option("--confirm <token>", "Must equal BALANCE to execute")
-  .option("--password <pw>", "Wallet password")
   .action(async (opts) => {
     try {
       const execute = opts.confirm === "BALANCE";
@@ -962,7 +1392,12 @@ async function recommendOrRun(opts: Record<string, string | boolean | undefined>
   const action = execute ? "run" : "recommend";
   const poolId = opts.pool as string | undefined;
   if (!poolId) return err(action, "--pool is required");
-  const password = (opts.password as string) ?? process.env.WALLET_PASSWORD ?? "";
+  // Password is read from WALLET_PASSWORD env var only. A --password CLI flag
+  // would leak via /proc/<pid>/cmdline and `ps auxww` — same exposure class
+  // @diegomey flagged on the child-process invocation of hodlmm-move-liquidity
+  // (PR #494 review item 5). Env vars are visible only to the same user or root
+  // via /proc/<pid>/environ, a much smaller exposure surface.
+  const password = process.env.WALLET_PASSWORD ?? "";
   const targetXRatio = parseTargetRatio(String(opts.targetRatio ?? "50:50"));
   const minDriftPct = Number(opts.minDriftPct ?? DEFAULT_MIN_DRIFT_PCT);
   const maxCorrectionSats = BigInt(String(opts.maxCorrectionSats ?? DEFAULT_MAX_CORRECTION_SATS));
@@ -1068,6 +1503,100 @@ async function recommendOrRun(opts: Record<string, string | boolean | undefined>
   const activePriceScaled = activeBinPriceScaled(poolBins.bins, poolBins.active_bin_id);
   if (activePriceScaled === 0n) {
     return out("blocked", action, { reason: "active_bin_price_unavailable" });
+  }
+
+  // ── OPT-IN 3-LEG PATH: withdraw-slice → swap → redeposit ────────────────────
+  // Enabled by --allow-rebalance-withdraw. Addresses the v1 limitation where a
+  // sprawled position cannot reach target ± --min-drift-pct via the default
+  // swap+recenter flow (no primitive redeposits wallet-side swap output into LP).
+  // Planned here, executed further below after the standard gates.
+  const allowRebalanceWithdraw = Boolean(opts["allowRebalanceWithdraw"]);
+  const sliceBpsCap = Math.min(
+    REBALANCE_MAX_SLICE_BPS,
+    Math.max(1, Number(opts["maxSliceBps"] ?? REBALANCE_MAX_SLICE_BPS))
+  );
+
+  if (allowRebalanceWithdraw) {
+    const planResult = planRebalanceWithdraw(
+      ratio, userBins, pool, poolBins.bins, poolBins.active_bin_id,
+      activePriceScaled, slippageBps, sliceBpsCap
+    );
+    if (planResult.status === "refused") {
+      return out("blocked", action, {
+        reason: `rebalance_withdraw_${planResult.reason}`,
+        detail: planResult.detail,
+      });
+    }
+    const rwPlan = planResult.plan;
+
+    if (!execute) {
+      return out("success", action, {
+        pool_id: poolId,
+        mode: "rebalance_withdraw",
+        ratio_before: ratio,
+        plan: rwPlan,
+        note: "Dry-run. Pass --confirm=BALANCE to execute the 3-leg flow (withdraw-slice → swap → redeposit).",
+      });
+    }
+
+    // Guard rails before broadcasting a 3-tx sequence on mainnet
+    if (stxBal < STX_GAS_FLOOR_USTX * 3n) {
+      return out("blocked", action, {
+        reason: "insufficient_stx_gas_for_3leg",
+        stx_balance_ustx: stxBal.toString(),
+        required_ustx: (STX_GAS_FLOOR_USTX * 3n).toString(),
+        hint: "3-leg rebalance needs gas reserve for withdraw + swap + redeposit.",
+      });
+    }
+
+    // Leg 1: withdraw-slice
+    const n1 = await fetchNonce(stxAddress);
+    const withdrawTx = await executeWithdrawSlice(stxPrivateKey, pool, rwPlan.withdraw, n1);
+    state[poolId] = {
+      ...(state[poolId] ?? {}),
+      last_cycle_at: new Date().toISOString(),
+      last_cycle_status: "withdraw_done_swap_pending",
+      last_withdraw_tx: withdrawTx,
+      last_cycle_mode: "rebalance_withdraw",
+    };
+    saveInventoryState(state);
+    await waitForTxConfirmation(withdrawTx);
+
+    // Leg 2: swap the withdrawn overweight proceeds
+    const n2 = await fetchNonce(stxAddress);
+    const swapTx2 = await executeCorrectiveSwap(stxPrivateKey, stxAddress, pool, rwPlan.swap, n2);
+    state[poolId] = {
+      ...(state[poolId] ?? {}),
+      last_cycle_status: "withdraw_done_swap_done_redeposit_pending",
+      last_swap_tx: swapTx2,
+    };
+    saveInventoryState(state);
+    await waitForTxConfirmation(swapTx2);
+
+    // Leg 3: redeposit swapped underweight proceeds as fresh liquidity near active
+    const n3 = await fetchNonce(stxAddress);
+    const redepositTx = await executeAddLiquidityRedeposit(stxPrivateKey, pool, rwPlan.redeposit, n3);
+    state[poolId] = {
+      ...(state[poolId] ?? {}),
+      last_cycle_at: new Date().toISOString(),
+      last_cycle_status: "success",
+      last_redeposit_tx: redepositTx,
+    };
+    saveInventoryState(state);
+
+    const ratioAfter = await readRatioAfterDelay(poolId, stxAddress, targetXRatio);
+    return out("success", action, {
+      pool_id: poolId,
+      pair: ratio.pair,
+      mode: "rebalance_withdraw",
+      ratio_before: ratio,
+      ratio_after: ratioAfter,
+      withdraw: { ...rwPlan.withdraw, tx_id: withdrawTx, explorer: `${EXPLORER}/0x${withdrawTx}?chain=mainnet` },
+      swap: { ...rwPlan.swap, tx_id: swapTx2, explorer: `${EXPLORER}/0x${swapTx2}?chain=mainnet` },
+      redeposit: { ...rwPlan.redeposit, tx_id: redepositTx, explorer: `${EXPLORER}/0x${redepositTx}?chain=mainnet` },
+      projected_x_ratio_after: rwPlan.projected_x_ratio_after,
+      state_marker: { path: INVENTORY_STATE_FILE, status: "success" },
+    });
   }
 
   // Operator overrides — deliberate escape hatch for testing or for corrections

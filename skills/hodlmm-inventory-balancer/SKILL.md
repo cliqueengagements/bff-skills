@@ -86,8 +86,21 @@ bun run hodlmm-inventory-balancer/hodlmm-inventory-balancer.ts run \
   [--skip-redeploy] \
   [--force-direction "X->Y" | "Y->X"] \
   [--force-amount-in-raw <n>] \
-  [--password <wallet-password>]
+  [--allow-rebalance-withdraw] \
+  [--max-slice-bps <0..8000>]
 ```
+
+Wallet password is read from the `WALLET_PASSWORD` env var. There is no `--password` CLI flag by design — an argv entry would surface in `/proc/<pid>/cmdline` and `ps auxww` for the process lifetime (same exposure class @arc0btc/@diegomey flagged on the child-process invocation of `hodlmm-move-liquidity`).
+
+### Opt-in 3-leg mode: `--allow-rebalance-withdraw`
+
+v1's swap + `move-liquidity-multi` redeploy is value-conserving and bin-to-bin — it cannot convert one LP side into the other when a position is sprawled. Setting `--allow-rebalance-withdraw` on `run` switches the executor to a 3-tx flow:
+
+1. **Withdraw-slice** — `dlmm-liquidity-router-v-1-1.withdraw-relative-liquidity-same-multi`. Picks the largest overweight bin, withdraws a share fraction sized to shift `|current − target| × total_value` back to wallet (capped at `--max-slice-bps`, default 80%).
+2. **Corrective swap** — same `swap-simple-multi` path as the default mode, sized to convert 100% of the withdraw proceeds to the underweight token.
+3. **Redeposit** — `dlmm-liquidity-router-v-1-1.add-relative-liquidity-same-multi` at active ± 1 bin, placing the swap output on the underweight side (X above active, Y below) with an `active-bin-tolerance` guard.
+
+The redeposit *replaces* the move-liquidity CLI invocation in this path — the 3-leg flow IS the redeploy. Use default mode (swap + move-liquidity recenter) for in-range small-drift corrections; use `--allow-rebalance-withdraw` when the position is sprawled or the deviation is too large for the swap alone.
 
 `--force-direction` + `--force-amount-in-raw` are an operator escape hatch for cases the planner refuses (e.g. wallet holds the under-weight side while the over-weight side is fully in the LP). Both flags must be supplied together.
 
