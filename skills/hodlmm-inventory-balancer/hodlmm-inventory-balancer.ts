@@ -47,7 +47,11 @@ const TOKEN_ASSET_NAMES: Record<string, string> = {
 };
 
 const FETCH_TIMEOUT = 30_000;
+// Bitflow DLMM bin layout: bin 500 is the canonical 1:1 center; activeBinOffset
+// = bin_id - CENTER_BIN_ID. All relative-offset math elsewhere assumes this.
 const CENTER_BIN_ID = 500;
+// Fixed-point denominator for bin prices from the Bitflow quotes API.
+// raw_y_for_swap = raw_x_in * price / PRICE_SCALE.
 const PRICE_SCALE = 1e8;
 
 // Reads state owned by hodlmm-move-liquidity (authoritative source for redeploy cooldown)
@@ -81,16 +85,24 @@ const THIN_POOL_MIN_RATIO = 3n; // active-bin reserve must be ≥ 3× expected o
 // and emitting before/after ratios.
 const VERIFY_SLEEP_MS = 10_000;
 
-// v1 scope: only Bitflow-tradeable HODLMM pools. JingSwap excluded.
-const V1_ELIGIBLE_POOLS = new Set<string>([
-  "dlmm_1", "dlmm_2", "dlmm_3", "dlmm_4", "dlmm_5", "dlmm_6", "dlmm_7", "dlmm_8",
-]);
+// v1 scope: Bitflow-tradeable HODLMM pools. Eligibility is derived dynamically
+// from /api/app/v1 per-pool state — no hardcoded allowlist. Predicates below.
+//
+// HODLMM_POOL_DEPLOYER is the single mainnet address that deploys DLMM pool
+// contracts; JingSwap and other AMMs use different deployers, so contract-prefix
+// match is the JingSwap-exclusion predicate Diego asked for (not an allowlist).
+const HODLMM_POOL_DEPLOYER = "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD";
+
+function isEligibleHodlmmPool(p: PoolMeta): boolean {
+  return p.pool_status === true && p.pool_contract.startsWith(`${HODLMM_POOL_DEPLOYER}.`);
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface PoolMeta {
   pool_id: string;
   pool_contract: string;
+  pool_status: boolean;
   token_x: string;
   token_y: string;
   token_x_symbol: string;
@@ -259,6 +271,7 @@ async function fetchPools(): Promise<PoolMeta[]> {
     return {
       pool_id: String(p.poolId ?? ""),
       pool_contract: String(p.poolContract ?? ""),
+      pool_status: p.poolStatus === true,
       token_x: String(tx.contract ?? ""),
       token_y: String(ty.contract ?? ""),
       token_x_symbol: String(tx.symbol ?? "?"),
@@ -325,6 +338,33 @@ async function fetchNonce(wallet: string): Promise<bigint> {
   const lastExec = data.last_executed_tx_nonce;
   if (lastExec !== undefined && lastExec !== null) return BigInt(Number(lastExec) + 1);
   return 0n;
+}
+
+// Stacks fee estimation. Queries Hiro `/v2/fees/transfer` for the current
+// uSTX-per-byte rate, multiplies by a conservative byte budget for the swap tx
+// (~500 bytes for swap-simple-multi with a sender-pin post-condition), and
+// floors at FEE_SWAP_FLOOR_USTX so we never pay below the upstream mempool
+// acceptance threshold. Same mempool-derived-with-floor pattern as the
+// upstream aibtcdev/skills#338 fix to hodlmm-move-liquidity.
+const FEE_SWAP_FLOOR_USTX = 250_000n;
+const FEE_SWAP_BYTES_BUDGET = 500n;
+
+async function estimateSwapFeeUstx(): Promise<bigint> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5_000);
+    try {
+      const res = await fetch(`${HIRO_API}/v2/fees/transfer`, { signal: controller.signal });
+      if (!res.ok) return FEE_SWAP_FLOOR_USTX;
+      const ratePerByte = BigInt(Math.max(0, Math.ceil(Number(await res.json()))));
+      const estimated = ratePerByte * FEE_SWAP_BYTES_BUDGET;
+      return estimated > FEE_SWAP_FLOOR_USTX ? estimated : FEE_SWAP_FLOOR_USTX;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return FEE_SWAP_FLOOR_USTX;
+  }
 }
 
 async function fetchPendingMempoolTxCount(wallet: string): Promise<number> {
@@ -647,6 +687,7 @@ async function executeCorrectiveSwap(
     "max-steps": uintCV(10),
   });
 
+  const fee = await estimateSwapFeeUstx();
   const tx = await makeContractCall({
     contractAddress: DLMM_SWAP_ROUTER_ADDR,
     contractName: DLMM_SWAP_ROUTER_NAME,
@@ -658,7 +699,7 @@ async function executeCorrectiveSwap(
     postConditions: pcs as never[],
     anchorMode: AnchorMode.Any,
     nonce,
-    fee: 50000n,
+    fee,
   });
 
   const result = await broadcastTransaction({ transaction: tx, network: STACKS_MAINNET });
@@ -681,9 +722,11 @@ function invokeMoveLiquidityRedeploy(poolId: string, stxAddress: string, passwor
   // (no value). `--force` overrides the IN_RANGE no-op gate — required here because the
   // inventory balancer corrects exposure ratio regardless of price-drift status.
   const args = ["run", cli, "run", "--wallet", stxAddress, "--pool", poolId, "--confirm", "--force"];
-  if (password) args.push("--password", password);
+  // Password is passed via env, never argv. An argv entry would surface in /proc/<pid>/cmdline
+  // and `ps auxww` for the child's lifetime; env vars are not visible to peers without ptrace.
+  const childEnv = password ? { ...process.env, WALLET_PASSWORD: password } : process.env;
 
-  const result = spawnSync("bun", args, { encoding: "utf-8", timeout: 120_000 });
+  const result = spawnSync("bun", args, { encoding: "utf-8", timeout: 120_000, env: childEnv });
   if (result.error) throw new Error(`move-liquidity invoke failed: ${result.error.message}`);
   if (result.status !== 0) {
     throw new Error(`move-liquidity exited ${result.status}: ${result.stderr || result.stdout}`);
@@ -706,8 +749,8 @@ async function gatherPool(poolId: string, wallet: string) {
   const pools = await fetchPools();
   const pool = pools.find((p) => p.pool_id === poolId);
   if (!pool) throw new Error(`Pool ${poolId} not found in Bitflow DLMM registry.`);
-  if (!V1_ELIGIBLE_POOLS.has(poolId)) {
-    throw new Error(`Pool ${poolId} not in v1 scope (JingSwap-only pairs excluded — unaudited).`);
+  if (!isEligibleHodlmmPool(pool)) {
+    throw new Error(`Pool ${poolId} not eligible (inactive or non-HODLMM deployer — v1 excludes JingSwap and retired pools).`);
   }
   const [poolBins, userBins] = await Promise.all([fetchPoolBins(poolId), fetchUserPositions(poolId, wallet)]);
   return { pool, poolBins, userBins };
@@ -761,7 +804,7 @@ program
 
       try {
         const pools = await fetchPools();
-        const eligible = pools.filter((p) => V1_ELIGIBLE_POOLS.has(p.pool_id));
+        const eligible = pools.filter(isEligibleHodlmmPool);
         checks.push({ name: "bitflow_app_api", ok: eligible.length > 0, detail: `${eligible.length} eligible pools` });
       } catch (e) {
         checks.push({ name: "bitflow_app_api", ok: false, detail: (e as Error).message });
@@ -788,10 +831,22 @@ program
         }
       }
 
-      // Surface cooldown state per pool (or the targeted one)
+      // Surface cooldown state per pool (or the targeted one). When no --pool is
+      // specified, iterate the live eligibility set; missing pool list on API
+      // error degrades to empty map rather than silently checking a stale allowlist.
       const targetPool = opts.pool as string | undefined;
       const cooldowns: Record<string, string> = {};
-      const poolsToCheck = targetPool ? [targetPool] : [...V1_ELIGIBLE_POOLS];
+      let poolsToCheck: string[];
+      if (targetPool) {
+        poolsToCheck = [targetPool];
+      } else {
+        try {
+          const livePools = await fetchPools();
+          poolsToCheck = livePools.filter(isEligibleHodlmmPool).map((p) => p.pool_id);
+        } catch {
+          poolsToCheck = [];
+        }
+      }
       for (const pid of poolsToCheck) {
         const ms = readMoveLiquidityCooldownMs(pid);
         cooldowns[pid] = ms === 0 ? "clear" : `${Math.ceil(ms / 60_000)} min remaining`;
@@ -835,7 +890,7 @@ program
       const targetXRatio = parseTargetRatio(opts.targetRatio);
       const minDriftPct = Number(opts.minDriftPct);
       const pools = await fetchPools();
-      const eligible = pools.filter((p) => V1_ELIGIBLE_POOLS.has(p.pool_id));
+      const eligible = pools.filter(isEligibleHodlmmPool);
       const targetPools = opts.pool ? eligible.filter((p) => p.pool_id === opts.pool) : eligible;
 
       const reports = [];
