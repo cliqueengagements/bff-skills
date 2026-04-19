@@ -15,7 +15,7 @@
  *   doctor   — reachability + wallet + router sanity
  *   status   — list the user's bins in a pool with token balances
  *   plan     — classify a proposed withdraw (dry-run, no tx)
- *   unwind   — execute the withdraw (requires --confirm)
+ *   withdraw — execute the withdraw (requires --confirm)
  */
 
 import { Command } from "commander";
@@ -841,12 +841,12 @@ function buildProgram(): Command {
       }
     });
 
-  interface UnwindOptions extends PlanOptions {
+  interface WithdrawOptions extends PlanOptions {
     confirm?: boolean;
   }
 
   program
-    .command("unwind")
+    .command("withdraw")
     .description(
       "Execute the withdraw on mainnet. Requires --confirm. Triple-gated: (1) plan verdict must be safe_to_broadcast, (2) position USD ≥ --min-position-usd, (3) --confirm flag. Mempool depth + 4h cooldown additionally enforced. Password entered interactively — no flag, no env var, no stored credential paths."
     )
@@ -858,15 +858,15 @@ function buildProgram(): Command {
     .option("--slippage-bps <n>", "Per-bin slippage floor bps", String(DEFAULT_SLIPPAGE_BPS))
     .option("--min-position-usd <n>", "Min position USD gate", String(MIN_POSITION_USD_DEFAULT))
     .option("--confirm", "Required to broadcast. Without it the command exits at the plan stage.")
-    .action(async (opts: UnwindOptions) => {
+    .action(async (opts: WithdrawOptions) => {
       try {
         const verdict = await buildPlan(opts);
         if (!verdict.safe_to_broadcast) {
-          out("blocked", "unwind", verdict);
+          out("blocked", "withdraw", verdict);
           process.exit(1);
         }
         if (!opts.confirm) {
-          out("dry-run", "unwind", { ...verdict, note: "Pass --confirm to broadcast" });
+          out("dry-run", "withdraw", { ...verdict, note: "Pass --confirm to broadcast" });
           return;
         }
         // Show the user the write they're about to authorize, then prompt for
@@ -891,19 +891,19 @@ function buildProgram(): Command {
         );
         const password = await promptPasswordInteractive();
         if (password.length === 0) {
-          out("error", "unwind", null, "Empty password — aborted");
+          out("error", "withdraw", null, "Empty password — aborted");
           process.exit(1);
         }
         const { stxPrivateKey, stxAddress } = await getWalletKeys(password);
         if (stxAddress !== opts.address) {
-          out("error", "unwind", null, `Wallet address ${stxAddress} != --address ${opts.address}`);
+          out("error", "withdraw", null, `Wallet address ${stxAddress} != --address ${opts.address}`);
           process.exit(1);
         }
         const mempool = await fetchMempoolDepth(stxAddress);
         if (mempool > 0) {
           out(
             "blocked",
-            "unwind",
+            "withdraw",
             { ...verdict, mempool_depth: mempool },
             `Mempool has ${mempool} pending tx(s) on sender; aborting per depth guard`
           );
@@ -927,7 +927,7 @@ function buildProgram(): Command {
         const state = loadState();
         state[opts.pool] = { last_exit_at: new Date().toISOString() };
         saveState(state);
-        out("broadcast", "unwind", {
+        out("broadcast", "withdraw", {
           pool: opts.pool,
           bin_count: verdict.selected_bins.length,
           chunk_count: verdict.chunks.length,
@@ -935,7 +935,7 @@ function buildProgram(): Command {
           aggregate: verdict.aggregate,
         });
       } catch (e) {
-        out("error", "unwind", null, (e as Error).message);
+        out("error", "withdraw", null, (e as Error).message);
         process.exit(1);
       }
     });

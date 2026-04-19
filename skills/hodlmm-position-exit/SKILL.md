@@ -5,7 +5,7 @@ metadata:
   author: "cliqueengagements"
   author-agent: "Micro Basilisk"
   user-invocable: "false"
-  arguments: "doctor | status | plan | unwind"
+  arguments: "doctor | status | plan | withdraw"
   entry: "hodlmm-position-exit/hodlmm-position-exit.ts"
   requires: "wallet, bitflow, hodlmm-bin-guardian, hodlmm-move-liquidity"
   tags: "defi, write, mainnet-only, requires-funds"
@@ -66,11 +66,11 @@ Gating:
 - `--slippage-bps <n>` (default `500` = 5%) — per-bin floor on min X/Y amounts
 - `--min-position-usd <n>` (default `0.50`) — triple-gate item 2; rejects dust-exits that would waste gas
 
-### `unwind`
+### `withdraw`
 Execute the withdraw on mainnet. Requires `--confirm`. Prints the exact amounts that will move, then prompts for the wallet password interactively on stderr. Echo is suppressed; the password is never accepted via CLI flag or environment variable, and a TTY is required.
 
 ```bash
-bun run skills/hodlmm-position-exit/hodlmm-position-exit.ts unwind \
+bun run skills/hodlmm-position-exit/hodlmm-position-exit.ts withdraw \
   --pool dlmm_1 \
   --address SP219TWC8G12CSX5AB093127NC82KYQWEH8ADD1AY \
   --all \
@@ -82,10 +82,10 @@ Without `--confirm` the command exits at the plan stage.
 
 ## Safety notes
 
-- **Interactive password only.** No `--password` flag, no `WALLET_PASS` env fallback. The skill refuses to sign unless stdin is a TTY. Autonomous loops cannot execute `unwind` — a human must be at the keyboard.
-- **Triple-gate model.** Every `unwind --confirm` must pass: (1) plan verdict `safe_to_broadcast: true`, (2) position USD ≥ `--min-position-usd`, (3) `--confirm` flag present.
+- **Interactive password only.** No `--password` flag, no `WALLET_PASS` env fallback. The skill refuses to sign unless stdin is a TTY. Autonomous loops cannot execute `withdraw` — a human must be at the keyboard.
+- **Triple-gate model.** Every `withdraw --confirm` must pass: (1) plan verdict `safe_to_broadcast: true`, (2) position USD ≥ `--min-position-usd`, (3) `--confirm` flag present.
 - **4h per-pool cooldown.** Shared state file (`~/.hodlmm-position-exit-state.json`) records the last exit timestamp per pool; subsequent exits on the same pool are blocked with a reason string for 4 hours. Intended to compose with `hodlmm-move-liquidity`'s equivalent cooldown so sequential HODLMM writes do not race.
-- **Mempool depth guard.** If the sender has any pending tx at broadcast time, the unwind aborts with `blocked`. Prevents the stuck-pending class where a withdraw appears to succeed but blocks the next write on the same nonce.
+- **Mempool depth guard.** If the sender has any pending tx at broadcast time, the withdraw aborts with `blocked`. Prevents the stuck-pending class where a withdraw appears to succeed but blocks the next write on the same nonce.
 - **Wallet-address match.** The unlocked wallet's STX address must equal `--address`. Catches "wrong wallet unlocked" typos before the signed tx leaves the machine.
 - **Slippage at the router, not the client.** The tx's `min-x-amount-total` and `min-y-amount-total` arguments are the authoritative slippage gate — the router reverts with the equivalent of `ERR_MINIMUM_RECEIVED` if the pool under-delivers. Per-bin `min-x-amount` / `min-y-amount` additionally cap slippage at the bin level.
 - **Post-condition mode.** `PostConditionMode.Allow` with empty `postConditions: []`. Rationale inline at the call site: DLP burn is internal bin-level accounting (not a SIP-010 FT), so there's no sender-side token outflow to pin. Same precedent as `hodlmm-move-liquidity` (aibtcdev/skills #317) — router arg is the canonical slippage gate. Verified against live mainnet tx `be20b594…` (see proof below).
@@ -98,7 +98,7 @@ Every subcommand emits a single JSON object to stdout with four fields:
 ```json
 {
   "status": "ok" | "degraded" | "dry-run" | "blocked" | "broadcast" | "error",
-  "action": "doctor" | "status" | "plan" | "unwind",
+  "action": "doctor" | "status" | "plan" | "withdraw",
   "data":   { /* subcommand-specific payload, or null on error */ },
   "error":  null | "descriptive message"
 }
@@ -111,7 +111,7 @@ Per subcommand:
 | `doctor`   | `ok`, `degraded`, `error`        | `{ checks: { bitflow_pools, bitflow_bins, hiro_api, router_contract, wallet? } }` |
 | `status`   | `ok`, `error`                    | `{ pool, pair, active_bin, bin_count, bins[], totals }` |
 | `plan`     | `ok`, `blocked`, `error`         | `{ pool, active_bin, selected_bins[], missing_bins[], plans[], chunks[][], aggregate, usd, cooldown_remaining_ms, blockers[], safe_to_broadcast }` |
-| `unwind`   | `broadcast`, `dry-run`, `blocked`, `error` | `{ pool, bin_count, chunk_count, txids[{ txid, explorer }], aggregate }` |
+| `withdraw`   | `broadcast`, `dry-run`, `blocked`, `error` | `{ pool, bin_count, chunk_count, txids[{ txid, explorer }], aggregate }` |
 
 ## Known constraints
 
