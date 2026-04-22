@@ -687,16 +687,24 @@ async function executeCorrectiveSwap(
   const minOut = BigInt(plan.minimum_amount_out_raw);
 
   const inAsset = resolveTokenAsset(plan.token_in);
+  const outAsset = resolveTokenAsset(plan.token_out);
 
-  // Post-condition: bounded upper send on the INPUT side. Allow mode because
-  // the router emits pool/protocol fee transfers that vary with pool config;
-  // Deny would require an explicit allowance for each fee flow. Minimum-output
-  // slippage is enforced by the router's own `min-received` argument
-  // (ERR_MINIMUM_RECEIVED internally). Same safety contract `hodlmm-move-liquidity`
-  // uses for its DLP mint/burn flow.
+  // Post-conditions: dual sender-side pins under existing Allow mode, closing
+  // @diegomey's item 2 from the #494 review per @macbotmini-eng's audit:
+  //   - INPUT side: willSendLte(amountIn) — caps sender outflow at the planned input.
+  //   - OUTPUT side: willReceiveGte(minOut) — floors sender receive at the same
+  //     value passed to the router's min-received uint, so the wallet layer and
+  //     the router contract layer enforce the same minimum-output invariant.
+  // Allow mode (vs Deny + enumerate-each-fee) remains because protocol/provider
+  // fees accrue inside dlmm-core's `unclaimed-protocol-fees` map and bin balances
+  // — they do NOT emit FT transfer events on the swap tx (verified on-chain against
+  // mainnet swap txs 0x134df5e1… and 0x5195822e…), so a receive-side user pin is
+  // orthogonal to the fee-flow surface and does not need a fee enumeration.
   const senderPin = Pc.principal(senderAddress).willSendLte(amountIn);
+  const receivePin = Pc.principal(senderAddress).willReceiveGte(minOut);
   const pcs: unknown[] = [
     inAsset.kind === "stx" ? senderPin.ustx() : senderPin.ft(inAsset.contract, inAsset.assetName),
+    outAsset.kind === "stx" ? receivePin.ustx() : receivePin.ft(outAsset.contract, outAsset.assetName),
   ];
 
   // Canonical entrypoint: swap-simple-multi takes a list of swap tuples.
