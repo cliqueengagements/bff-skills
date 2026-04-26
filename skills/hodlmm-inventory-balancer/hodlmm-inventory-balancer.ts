@@ -970,11 +970,9 @@ function planRebalanceWithdraw(
     bins: redepositBins,
     total_x_raw: overWeightX ? "0" : underweightRaw.toString(),
     total_y_raw: overWeightX ? underweightRaw.toString() : "0",
-    // Carried for plan-output visibility only — the contract call passes
-    // `noneCV()` for active-bin-tolerance per KB bug #40 + the proven Leg 3
-    // tx 0x135f490ca3f7b2862c3bd2eb33124bcd99e9ce2d93331865ad1dfd2065d6f53c
-    // (mid-cycle race: active bin can move between Leg 2 swap and Leg 3
-    // redeposit, so a hard tolerance check spuriously aborts with err u5008).
+    // Carried for plan-output visibility only (operator can inspect via
+    // `recommend` mode). Contract call passes `noneCV()` for active-bin-tolerance
+    // — see executeAddLiquidityRedeposit for rationale.
     active_bin_expected: activeBin,
     active_bin_tolerance: REBALANCE_ADD_TOLERANCE_BINS,
   };
@@ -1101,18 +1099,23 @@ async function executeAddLiquidityRedeposit(
     "y-amount": uintCV(BigInt(b.y_amount_raw)),
   }));
 
-  // active-bin-tolerance: noneCV() — proven on-chain in tx
-  // 0x135f490ca3f7b2862c3bd2eb33124bcd99e9ce2d93331865ad1dfd2065d6f53c (Leg 3
-  // of the dlmm_1 0%X→100%X→49.95%X / 50.05%Y proof cycle, block 7641905).
-  // Per KB bug #40 (`bff-skills/docs/knowledge-base.md`): mid-cycle the active
-  // bin can drift between our Leg 2 swap (which moves the pool) and Leg 3
-  // redeposit (which reads it), so a `someCV({expected-bin-id, max-deviation})`
+  // active-bin-tolerance: pass noneCV() instead of someCV({expected-bin-id,
+  // max-deviation}). Mid-cycle the active bin can drift between our Leg 2 swap
+  // (which moves the pool) and Leg 3 redeposit (which reads it), so a hard
   // tolerance check spuriously aborts with `(err u5008)` ERR_ACTIVE_BIN_TOLERANCE
-  // even when the redeposit math is correct. `plan.active_bin_expected` and
-  // `plan.active_bin_tolerance` are carried in the plan for output visibility
-  // (operator can see them in `recommend` mode) but not enforced in the contract
-  // call — the wallet-side max-x-liquidity-fee + min-dlp + per-bin offset bounds
-  // already constrain fund safety on the redeposit.
+  // even when the redeposit math is correct. Widening max-deviation does not
+  // help — on high-volume pools the bin can move arbitrarily far in 30-60s.
+  //
+  // Proven on-chain in Leg 3 tx
+  // 0x135f490ca3f7b2862c3bd2eb33124bcd99e9ce2d93331865ad1dfd2065d6f53c
+  // (mainnet block 7641905, dlmm_1, 0%X→100%X→49.95%X / 50.05%Y rebalance
+  // cycle — see paired txs 0x89315a8b… (Leg 1 withdraw) and 0x5195822e…
+  // (Leg 2 swap)).
+  //
+  // Fund safety on the redeposit is preserved by the wallet-side bounds already
+  // enforced on each `positions` entry: max-x-liquidity-fee + max-y-liquidity-fee
+  // (per-bin 5% caps), min-dlp (>=1 share required for the deposit to settle),
+  // and per-bin x-amount / y-amount limits.
   const fee = await estimateSwapFeeUstx();
   const tx = await makeContractCall({
     contractAddress: DLMM_LIQUIDITY_ROUTER_ADDR,
