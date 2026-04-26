@@ -2,3 +2,6 @@ node_modules/
 bun.lock
 package.json
 *.env
+
+# Internal knowledge base — must never be tracked or pushed
+docs/knowledge-base.md
