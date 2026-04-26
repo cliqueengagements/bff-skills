@@ -970,13 +970,12 @@ function planRebalanceWithdraw(
     bins: redepositBins,
     total_x_raw: overWeightX ? "0" : underweightRaw.toString(),
     total_y_raw: overWeightX ? underweightRaw.toString() : "0",
-    // Bitflow API returns active_bin_id UNSIGNED (offset by +CENTER_BIN_ID).
-    // dlmm-liquidity-router-v-1-1.add-relative-liquidity-same-multi expects
-    // `expected-bin-id` SIGNED (matches on-chain (get-active-bin-id)). Without
-    // the subtraction every Leg 3 redeposit reverts (err u5008,
-    // ERR_ACTIVE_BIN_TOLERANCE) with a 500-bin delta. Caught analogously in
-    // hodlmm-move-liquidity at the 2026-04-22 proof cycle.
-    active_bin_expected: activeBin - CENTER_BIN_ID,
+    // Carried for plan-output visibility only — the contract call passes
+    // `noneCV()` for active-bin-tolerance per KB bug #40 + the proven Leg 3
+    // tx 0x135f490ca3f7b2862c3bd2eb33124bcd99e9ce2d93331865ad1dfd2065d6f53c
+    // (mid-cycle race: active bin can move between Leg 2 swap and Leg 3
+    // redeposit, so a hard tolerance check spuriously aborts with err u5008).
+    active_bin_expected: activeBin,
     active_bin_tolerance: REBALANCE_ADD_TOLERANCE_BINS,
   };
 
@@ -1079,7 +1078,7 @@ async function executeAddLiquidityRedeposit(
     listCV,
     tupleCV,
     contractPrincipalCV,
-    someCV,
+    noneCV,
     PostConditionMode,
     AnchorMode,
   } = await import("@stacks/transactions" as string);
@@ -1102,11 +1101,18 @@ async function executeAddLiquidityRedeposit(
     "y-amount": uintCV(BigInt(b.y_amount_raw)),
   }));
 
-  const toleranceTuple = tupleCV({
-    "expected-bin-id": intCV(plan.active_bin_expected),
-    "max-deviation": uintCV(BigInt(plan.active_bin_tolerance)),
-  });
-
+  // active-bin-tolerance: noneCV() — proven on-chain in tx
+  // 0x135f490ca3f7b2862c3bd2eb33124bcd99e9ce2d93331865ad1dfd2065d6f53c (Leg 3
+  // of the dlmm_1 0%X→100%X→49.95%X / 50.05%Y proof cycle, block 7641905).
+  // Per KB bug #40 (`bff-skills/docs/knowledge-base.md`): mid-cycle the active
+  // bin can drift between our Leg 2 swap (which moves the pool) and Leg 3
+  // redeposit (which reads it), so a `someCV({expected-bin-id, max-deviation})`
+  // tolerance check spuriously aborts with `(err u5008)` ERR_ACTIVE_BIN_TOLERANCE
+  // even when the redeposit math is correct. `plan.active_bin_expected` and
+  // `plan.active_bin_tolerance` are carried in the plan for output visibility
+  // (operator can see them in `recommend` mode) but not enforced in the contract
+  // call — the wallet-side max-x-liquidity-fee + min-dlp + per-bin offset bounds
+  // already constrain fund safety on the redeposit.
   const fee = await estimateSwapFeeUstx();
   const tx = await makeContractCall({
     contractAddress: DLMM_LIQUIDITY_ROUTER_ADDR,
@@ -1117,7 +1123,7 @@ async function executeAddLiquidityRedeposit(
       contractPrincipalCV(poolAddr, poolName),
       contractPrincipalCV(xAddr, xName),
       contractPrincipalCV(yAddr, yName),
-      someCV(toleranceTuple),
+      noneCV(),
     ],
     senderKey: privateKey,
     network: STACKS_MAINNET,
