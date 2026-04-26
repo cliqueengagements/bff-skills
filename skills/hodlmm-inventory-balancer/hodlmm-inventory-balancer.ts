@@ -970,7 +970,13 @@ function planRebalanceWithdraw(
     bins: redepositBins,
     total_x_raw: overWeightX ? "0" : underweightRaw.toString(),
     total_y_raw: overWeightX ? underweightRaw.toString() : "0",
-    active_bin_expected: activeBin,
+    // Bitflow API returns active_bin_id UNSIGNED (offset by +CENTER_BIN_ID).
+    // dlmm-liquidity-router-v-1-1.add-relative-liquidity-same-multi expects
+    // `expected-bin-id` SIGNED (matches on-chain (get-active-bin-id)). Without
+    // the subtraction every Leg 3 redeposit reverts (err u5008,
+    // ERR_ACTIVE_BIN_TOLERANCE) with a 500-bin delta. Caught analogously in
+    // hodlmm-move-liquidity at the 2026-04-22 proof cycle.
+    active_bin_expected: activeBin - CENTER_BIN_ID,
     active_bin_tolerance: REBALANCE_ADD_TOLERANCE_BINS,
   };
 
